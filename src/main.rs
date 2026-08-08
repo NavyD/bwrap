@@ -68,6 +68,11 @@ struct BWArgs {
 }
 
 #[derive(clap::Args, Debug, Clone)]
+#[command(group(
+    clap::ArgGroup::new("daemon-mode")
+        .args(["daemon", "stop", "restart"])
+        .multiple(false)
+))]
 struct BWServeArgs {
     #[arg(long, default_value = "localhost")]
     hostname: String,
@@ -84,6 +89,16 @@ struct BWServeArgs {
     bw_path: String,
     #[arg(long)]
     pidfile: Option<PathBuf>,
+
+    /// 以后台 daemon 方式启动并退出
+    #[arg(long)]
+    daemon: bool,
+    /// 优雅终止后台 daemon
+    #[arg(long)]
+    stop: bool,
+    /// 重启后台 daemon（先 stop 再拉起新进程）
+    #[arg(long)]
+    restart: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -257,4 +272,49 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     })
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn serve_daemon_flag_parses() {
+        let cli =
+            BWCli::try_parse_from(["bwrap", "serve", "--daemon"]).unwrap();
+        match &cli.cmd {
+            Some(BWCommands::Serve(a)) => assert!(a.daemon),
+            _ => panic!("expected serve subcommand"),
+        }
+    }
+
+    #[test]
+    fn serve_stop_flag_parses() {
+        let cli = BWCli::try_parse_from(["bwrap", "serve", "--stop"]).unwrap();
+        match &cli.cmd {
+            Some(BWCommands::Serve(a)) => assert!(a.stop),
+            _ => panic!("expected serve subcommand"),
+        }
+    }
+
+    #[test]
+    fn serve_restart_flag_parses() {
+        let cli =
+            BWCli::try_parse_from(["bwrap", "serve", "--restart"]).unwrap();
+        match &cli.cmd {
+            Some(BWCommands::Serve(a)) => assert!(a.restart),
+            _ => panic!("expected serve subcommand"),
+        }
+    }
+
+    #[test]
+    fn serve_daemon_mode_mutually_exclusive() {
+        let res =
+            BWCli::try_parse_from(["bwrap", "serve", "--daemon", "--stop"]);
+        assert!(res.is_err());
+        let res =
+            BWCli::try_parse_from(["bwrap", "serve", "--restart", "--stop"]);
+        assert!(res.is_err());
+    }
 }
