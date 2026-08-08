@@ -504,14 +504,13 @@ mod tests {
 
     #[tokio::test]
     async fn stop_daemon_no_daemon() {
-        // 绑定一个端口后立即释放，确保该端口无监听
-        let addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        let port = addr.port();
-        let res = stop_daemon("127.0.0.1", port).await;
+        // httpmock 对未 mock 的路径返回 404，确定性模拟"端口上有服务但不是 bwrap daemon"
+        // 注意不能用 bind 后立即释放的方式模拟"无监听"：并发测试下端口可能被
+        // 其他测试（如 stop_daemon_success 的 mock server）复用，导致偶发竞态失败。
+        let server = httpmock::MockServer::start_async().await;
+        let host = server.host();
+        let port = server.port();
+        let res = stop_daemon(&host, port).await;
         assert!(res.is_err());
     }
 
