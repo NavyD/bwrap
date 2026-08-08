@@ -274,10 +274,82 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     Ok(())
 }
 
+/// 构造后台 daemon 的命令行参数（不含日志重定向等 IO 配置）
+fn daemon_args(hostname: &str, port: u16) -> Vec<String> {
+    vec![
+        "serve".to_string(),
+        "--hostname".to_string(),
+        hostname.to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ]
+}
+
+/// 向运行中的 daemon 发送优雅关闭请求
+async fn stop_daemon(hostname: &str, port: u16) -> Result<()> {
+    let url = format!("http://{}:{}/__bwrap/shutdown", hostname, port);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("no running bwrap serve daemon at {url}: {e}"))?;
+    if !resp.status().is_success() {
+        bail!("failed to stop daemon at {url}: {}", resp.status());
+    }
+    Ok(())
+}
+
+/// 等待端口释放（daemon 停止监听），超时返回错误
+async fn wait_port_free(
+    hostname: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if TcpListener::bind(format!("{}:{}", hostname, port))
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "timeout waiting for port {}:{} to be released",
+                hostname,
+                port
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// 等待端口就绪（daemon 已监听），超时返回错误
+async fn wait_port_ready(
+    hostname: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if TcpListener::bind(format!("{}:{}", hostname, port))
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("timeout waiting for daemon at {}:{}", hostname, port);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+    use tokio::net;
 
     #[test]
     fn serve_daemon_flag_parses() {
@@ -315,6 +387,81 @@ mod tests {
         assert!(res.is_err());
         let res =
             BWCli::try_parse_from(["bwrap", "serve", "--restart", "--stop"]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn daemon_args_build() {
+        assert_eq!(
+            daemon_args("localhost", 8087),
+            vec!["serve", "--hostname", "localhost", "--port", "8087"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_daemon_success() {
+        let server = httpmock::MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::POST)
+                    .path("/__bwrap/shutdown");
+                then.status(200);
+            })
+            .await;
+        let host = server.host();
+        let port = server.port();
+        stop_daemon(&host, port).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_daemon_no_daemon() {
+        // 绑定一个端口后立即释放，确保该端口无监听
+        let addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let port = addr.port();
+        let res = stop_daemon("127.0.0.1", port).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn wait_port_free_when_released() {
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        // 端口被占用时 wait_port_free 应超时
+        let res =
+            wait_port_free("127.0.0.1", port, Duration::from_millis(200)).await;
+        assert!(res.is_err());
+        drop(listener);
+        wait_port_free("127.0.0.1", port, Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_port_ready_when_listening() {
+        // 端口被占用（有监听）→ wait_port_ready 应立即返回 Ok
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        wait_port_ready("127.0.0.1", port, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        // 释放后无监听 → wait_port_ready 应超时
+        // 注意：不能用特权端口 1（普通用户 bind 返回 PermissionDenied 会被误判为"就绪"）
+        drop(listener);
+        let listener2 = net::TcpListener::bind(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let port = listener2.local_addr().unwrap().port();
+        drop(listener2);
+        let res =
+            wait_port_ready("127.0.0.1", port, Duration::from_millis(200))
+                .await;
         assert!(res.is_err());
     }
 }
