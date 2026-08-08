@@ -52,8 +52,13 @@ pub async fn start(args: BWAgentConfig) -> Result<()> {
             // 显式回收 bw serve 子进程，避免依赖 kill_on_drop（被 idle_lock 任务持有的 Arc 架空，
             // 否则子进程需等 idle 任务在 deadline 唤醒后才被 kill，最长残留 idle_lock_timeout）
             let mut lock = shutdown_state.bw_serve_child.lock().await;
-            if let Some(mut child) = lock.take() {
-                let _ = child.kill().await;
+            if let Some(mut child) = lock.take()
+                && let Err(e) = child.kill().await
+            {
+                tracing::error!(
+                    error = %e,
+                    "failed to kill bw serve child on shutdown"
+                );
             }
         })
         .await?;
