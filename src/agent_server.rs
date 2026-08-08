@@ -31,11 +31,13 @@ pub async fn start(args: BWAgentConfig) -> Result<()> {
     let bw_child = spawn_bw_serve(&args.bw_path, &bw_serve_url).await?;
 
     let listen_url = args.listen_url.parse::<Url>()?;
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let state = AppState {
         args: Arc::new(args),
         idle_lock_task: Arc::new(Mutex::new(None)),
         bw_serve_child: Arc::new(Mutex::new(Some(bw_child))),
         bw_serve_url: Arc::new(bw_serve_url),
+        shutdown_tx,
     };
     let app = build_router(state).await?;
 
@@ -43,12 +45,22 @@ pub async fn start(args: BWAgentConfig) -> Result<()> {
         listen_url.socket_addrs(|| listen_url.port_or_known_default())?;
     tracing::info!(addr = ?addr, "tcp serving");
     let listener = net::TcpListener::bind(&*addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
+        .await?;
     Ok(())
+}
+
+async fn shutdown_handler(State(s): State<AppState>) -> axum::http::StatusCode {
+    let _ = s.shutdown_tx.send(true);
+    axum::http::StatusCode::OK
 }
 
 async fn build_router(state: AppState) -> Result<Router> {
     let mut app = Router::<AppState>::new();
+    app = app.route("/__bwrap/shutdown", axum::routing::post(shutdown_handler));
     app = match state.bw_serve_url.scheme() {
         "http" | "https" => {
             app.merge(ReverseProxy::new("/", state.bw_serve_url.as_str()))
@@ -110,6 +122,7 @@ struct AppState {
     bw_serve_child: Arc<Mutex<Option<process::Child>>>,
     args: Arc<BWAgentConfig>,
     bw_serve_url: Arc<Url>,
+    shutdown_tx: watch::Sender<bool>,
 }
 
 #[derive(Debug)]
@@ -187,4 +200,58 @@ async fn idle_lock(s: &mut AppState) {
         }
     });
     *lock = Some(IdleLockTask { deadline_tx: tx });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use std::time::Duration;
+
+    fn test_state(shutdown_tx: watch::Sender<bool>) -> AppState {
+        AppState {
+            args: Arc::new(BWAgentConfig {
+                idle_lock_timeout: Duration::from_secs(60),
+                bw_path: PathBuf::from("/nonexistent/bw"),
+                listen_url: "http://localhost:8087".to_string(),
+            }),
+            idle_lock_task: Arc::new(Mutex::new(None)),
+            bw_serve_child: Arc::new(Mutex::new(None)),
+            bw_serve_url: Arc::new("http://127.0.0.1:1".parse().unwrap()),
+            shutdown_tx,
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_handler_sends_signal() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let state = test_state(shutdown_tx);
+        let status = shutdown_handler(State(state)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(shutdown_rx.changed().await.is_ok());
+        assert!(*shutdown_rx.borrow());
+    }
+
+    #[tokio::test]
+    async fn shutdown_route_returns_200_and_stops_server() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let state = test_state(shutdown_tx);
+        let app = build_router(state).await.unwrap();
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.changed().await;
+                })
+                .await
+                .unwrap();
+        });
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/__bwrap/shutdown", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
