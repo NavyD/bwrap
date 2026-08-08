@@ -235,7 +235,7 @@ async fn spawn_daemon(hostname: &str, port: u16) -> Result<()> {
         use windows_sys::Win32::System::Threading::{
             CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
         };
-        cmd.creation_flags((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0);
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
     let child = cmd.spawn()?;
     tracing::info!(cmd = ?cmd, child = ?child, "spawned agent server");
