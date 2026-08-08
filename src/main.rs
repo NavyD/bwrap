@@ -295,7 +295,12 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
 
 /// --daemon：端口空闲则后台拉起，否则报错
 async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
-    match TcpListener::bind(format!("{}:{}", serve_args.hostname, serve_args.port)).await {
+    match TcpListener::bind(format!(
+        "{}:{}",
+        serve_args.hostname, serve_args.port
+    ))
+    .await
+    {
         // 端口空闲，可后台拉起
         Ok(_) => {}
         // 端口已被监听 → 已运行，报错提示
@@ -307,29 +312,50 @@ async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
             );
         }
         // 其他错误（如权限）如实报错
-        Err(e) => bail!("failed to check port {}:{}: {e}", serve_args.hostname, serve_args.port),
+        Err(e) => bail!(
+            "failed to check port {}:{}: {e}",
+            serve_args.hostname,
+            serve_args.port
+        ),
     }
     spawn_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_ready(&serve_args.hostname, serve_args.port, Duration::from_secs(5)).await?;
+    wait_port_ready(
+        &serve_args.hostname,
+        serve_args.port,
+        Duration::from_secs(5),
+    )
+    .await?;
     Ok(())
 }
 
 /// --stop：优雅终止后台 daemon
 async fn bw_serve_stop(serve_args: &BWServeArgs) -> Result<()> {
     stop_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_free(&serve_args.hostname, serve_args.port, Duration::from_secs(5))
-        .await?;
+    wait_port_free(
+        &serve_args.hostname,
+        serve_args.port,
+        Duration::from_secs(5),
+    )
+    .await?;
     Ok(())
 }
 
 /// --restart：stop → 等端口释放 → 拉起 → 等就绪
 async fn bw_serve_restart(serve_args: &BWServeArgs) -> Result<()> {
     stop_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_free(&serve_args.hostname, serve_args.port, Duration::from_secs(5))
-        .await?;
+    wait_port_free(
+        &serve_args.hostname,
+        serve_args.port,
+        Duration::from_secs(5),
+    )
+    .await?;
     spawn_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_ready(&serve_args.hostname, serve_args.port, Duration::from_secs(5))
-        .await?;
+    wait_port_ready(
+        &serve_args.hostname,
+        serve_args.port,
+        Duration::from_secs(5),
+    )
+    .await?;
     Ok(())
 }
 
@@ -395,7 +421,9 @@ async fn wait_port_ready(
     loop {
         match TcpListener::bind(format!("{}:{}", hostname, port)).await {
             // 端口已被监听（Address already in use）→ 视为就绪
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                return Ok(());
+            }
             // 绑定成功（端口空闲）或非 AddrInUse 错误（如权限）→ 继续等待
             _ => {}
         }
