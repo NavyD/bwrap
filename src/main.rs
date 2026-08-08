@@ -541,15 +541,10 @@ mod tests {
 
         // 释放后无监听 → wait_port_ready 应超时
         // 注意：不能用特权端口 1（普通用户 bind 返回 PermissionDenied 会被误判为"就绪"）
-        drop(listener);
-        let listener2 = net::TcpListener::bind(format!("127.0.0.1:{port}"))
-            .await
-            .unwrap();
-        let port = listener2.local_addr().unwrap().port();
-        drop(listener2);
+        // 也不能用"bind 拿端口再释放"的方式（并发测试下端口可能被其他测试复用）。
+        // 端口 0 表示"自动分配"，bind 必然成功且永远不会是 AddrInUse → 必然走到超时路径。
         let res =
-            wait_port_ready("127.0.0.1", port, Duration::from_millis(200))
-                .await;
+            wait_port_ready("127.0.0.1", 0, Duration::from_millis(200)).await;
         assert!(res.is_err());
     }
 }
