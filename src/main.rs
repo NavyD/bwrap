@@ -261,10 +261,21 @@ async fn get_api_url_or_start_bw_serve_daemon(
     }
 
     spawn_daemon(hostname, port).await?;
+    wait_port_ready(hostname, port, Duration::from_secs(5)).await?;
     Ok(url)
 }
 
 async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
+    if serve_args.daemon {
+        return bw_serve_daemon(serve_args).await;
+    }
+    if serve_args.stop {
+        return bw_serve_stop(serve_args).await;
+    }
+    if serve_args.restart {
+        return bw_serve_restart(serve_args).await;
+    }
+
     let bw_path = serve_args.bw_path.clone();
     let bw_path =
         tokio::task::spawn_blocking(move || which::which(bw_path)).await??;
@@ -282,6 +293,46 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     Ok(())
 }
 
+/// --daemon：端口空闲则后台拉起，否则报错
+async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
+    match TcpListener::bind(format!("{}:{}", serve_args.hostname, serve_args.port)).await {
+        // 端口空闲，可后台拉起
+        Ok(_) => {}
+        // 端口已被监听 → 已运行，报错提示
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            bail!(
+                "port {}:{} already in use, use --restart to restart daemon",
+                serve_args.hostname,
+                serve_args.port
+            );
+        }
+        // 其他错误（如权限）如实报错
+        Err(e) => bail!("failed to check port {}:{}: {e}", serve_args.hostname, serve_args.port),
+    }
+    spawn_daemon(&serve_args.hostname, serve_args.port).await?;
+    wait_port_ready(&serve_args.hostname, serve_args.port, Duration::from_secs(5)).await?;
+    Ok(())
+}
+
+/// --stop：优雅终止后台 daemon
+async fn bw_serve_stop(serve_args: &BWServeArgs) -> Result<()> {
+    stop_daemon(&serve_args.hostname, serve_args.port).await?;
+    wait_port_free(&serve_args.hostname, serve_args.port, Duration::from_secs(5))
+        .await?;
+    Ok(())
+}
+
+/// --restart：stop → 等端口释放 → 拉起 → 等就绪
+async fn bw_serve_restart(serve_args: &BWServeArgs) -> Result<()> {
+    stop_daemon(&serve_args.hostname, serve_args.port).await?;
+    wait_port_free(&serve_args.hostname, serve_args.port, Duration::from_secs(5))
+        .await?;
+    spawn_daemon(&serve_args.hostname, serve_args.port).await?;
+    wait_port_ready(&serve_args.hostname, serve_args.port, Duration::from_secs(5))
+        .await?;
+    Ok(())
+}
+
 /// 构造后台 daemon 的命令行参数（不含日志重定向等 IO 配置）
 fn daemon_args(hostname: &str, port: u16) -> Vec<String> {
     vec![
@@ -296,7 +347,9 @@ fn daemon_args(hostname: &str, port: u16) -> Vec<String> {
 /// 向运行中的 daemon 发送优雅关闭请求
 async fn stop_daemon(hostname: &str, port: u16) -> Result<()> {
     let url = format!("http://{}:{}/__bwrap/shutdown", hostname, port);
-    let resp = reqwest::Client::new()
+    let resp = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?
         .post(&url)
         .send()
         .await
@@ -340,11 +393,11 @@ async fn wait_port_ready(
 ) -> Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if TcpListener::bind(format!("{}:{}", hostname, port))
-            .await
-            .is_err()
-        {
-            return Ok(());
+        match TcpListener::bind(format!("{}:{}", hostname, port)).await {
+            // 端口已被监听（Address already in use）→ 视为就绪
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return Ok(()),
+            // 绑定成功（端口空闲）或非 AddrInUse 错误（如权限）→ 继续等待
+            _ => {}
         }
         if std::time::Instant::now() >= deadline {
             bail!("timeout waiting for daemon at {}:{}", hostname, port);
