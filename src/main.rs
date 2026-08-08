@@ -190,24 +190,8 @@ const PROJECTDIRS: LazyCell<ProjectDirs> = LazyCell::new(|| {
     ProjectDirs::from("xyz", "navyd", env!("CARGO_BIN_NAME"))
         .expect("not found project dirs")
 });
-async fn get_api_url_or_start_bw_serve_daemon(
-    bw_args: &BWArgs,
-) -> Result<String> {
-    if let Some(s) = &bw_args.api_url {
-        return Ok(s.to_string());
-    }
-
-    let hostname = "localhost";
-    let port = "8087";
-    let url = format!("http://{}:{}", hostname, port);
-    if !bw_args.restart_agent
-        && let Err(e) =
-            TcpListener::bind(format!("{}:{}", hostname, port)).await
-    {
-        tracing::debug!(url = url, error = ?e, "found exists addr");
-        return Ok(url);
-    }
-
+/// 以当前可执行文件拉起后台 daemon（`bwrap serve --hostname --port`）
+async fn spawn_daemon(hostname: &str, port: u16) -> Result<()> {
     let log_path = PROJECTDIRS.cache_dir().join("daemon.log");
     if let Some(pp) = log_path.parent() {
         fs::create_dir_all(pp).await?
@@ -231,7 +215,7 @@ async fn get_api_url_or_start_bw_serve_daemon(
 
     let exe = std::env::current_exe()?;
     let mut cmd = process::Command::new(exe);
-    cmd.args(["serve", "--hostname", hostname, "--port", port])
+    cmd.args(daemon_args(hostname, port))
         .stdout(stdout)
         .stderr(stderr)
         .stdin(Stdio::null());
@@ -248,11 +232,35 @@ async fn get_api_url_or_start_bw_serve_daemon(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // TODO
-        todo!()
+        use windows_sys::Win32::System::Threading::{
+            CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+        };
+        cmd.creation_flags((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0);
     }
     let child = cmd.spawn()?;
     tracing::info!(cmd = ?cmd, child = ?child, "spawned agent server");
+    Ok(())
+}
+
+async fn get_api_url_or_start_bw_serve_daemon(
+    bw_args: &BWArgs,
+) -> Result<String> {
+    if let Some(s) = &bw_args.api_url {
+        return Ok(s.to_string());
+    }
+
+    let hostname = "localhost";
+    let port = 8087;
+    let url = format!("http://{}:{}", hostname, port);
+    if !bw_args.restart_agent
+        && let Err(e) =
+            TcpListener::bind(format!("{}:{}", hostname, port)).await
+    {
+        tracing::debug!(url = url, error = ?e, "found exists addr");
+        return Ok(url);
+    }
+
+    spawn_daemon(hostname, port).await?;
     Ok(url)
 }
 
