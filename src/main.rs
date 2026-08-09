@@ -266,9 +266,19 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
         tracing::info!(error = %e, "bw serve stopped")
     }
 
-    let bw_path = serve_args.bw_path.clone();
-    let bw_path =
-        tokio::task::spawn_blocking(move || which::which(bw_path)).await??;
+    let bw_path = tokio::task::spawn_blocking({
+        let bw_path = serve_args.bw_path.clone();
+        move || {
+            // 检查 bw bin 路径，如果与当前 bwrap bin
+            // 重命名的文件路径一致则使用另一个 bw
+            let exe = std::env::current_exe()?;
+            let mut it = which::which_all(&bw_path)?;
+            it.next()
+                .and_then(|p| if p == exe { it.next() } else { Some(p) })
+                .ok_or_else(|| anyhow!("not found bin {}", bw_path))
+        }
+    })
+    .await??;
     let listen_url: url::Url = if serve_args.hostname.starts_with("unix://") {
         serve_args.hostname.parse()?
     } else {
