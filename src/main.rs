@@ -1,6 +1,5 @@
 use std::cell::LazyCell;
 use std::fmt::Debug;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -13,7 +12,7 @@ use directories::ProjectDirs;
 use sonic_rs::to_string as ser_to_json;
 use tokio::fs::{self, File};
 use tokio::io::{self, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::process;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -22,10 +21,11 @@ use tracing_subscriber::util::SubscriberInitExt;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = BWCli::parse();
-    // let (non_blk_io, _guard) = tracing_appender::non_blocking(std::io::stderr());
+    let (non_blk_io, _guard) =
+        tracing_appender::non_blocking(std::io::stderr());
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        // .with_writer(non_blk_io)
+        .with_writer(non_blk_io)
         .finish()
         .try_init()?;
     use BWCommands::*;
@@ -57,22 +57,12 @@ struct BWArgs {
     #[arg(long, global = true)]
     nointeraction: bool,
 
-    /// NOTE: 私有选项
-    /// 支持
-    /// - http://localhost[:$port]/
-    /// - unix://[localhost[:$port]]/path/to/file.socket
-    #[arg(long)]
-    api_url: Option<String>,
-    #[arg(long)]
-    restart_agent: bool,
+    // NOTE: 私有选项
+    #[arg(long, global = true, default_value = "http://localhost:8087")]
+    api_url: url::Url,
 }
 
 #[derive(clap::Args, Debug, Clone)]
-#[command(group(
-    clap::ArgGroup::new("daemon-mode")
-        .args(["daemon", "stop", "restart"])
-        .multiple(false)
-))]
 struct BWServeArgs {
     #[arg(long, default_value = "localhost")]
     hostname: String,
@@ -87,8 +77,6 @@ struct BWServeArgs {
     idle_lock_timeout: Duration,
     #[arg(long, default_value = "bw")]
     bw_path: String,
-    #[arg(long)]
-    pidfile: Option<PathBuf>,
 
     /// 以后台 daemon 方式启动并退出
     #[arg(long)]
@@ -245,35 +233,37 @@ async fn spawn_daemon(hostname: &str, port: u16) -> Result<()> {
 async fn get_api_url_or_start_bw_serve_daemon(
     bw_args: &BWArgs,
 ) -> Result<String> {
-    if let Some(s) = &bw_args.api_url {
-        return Ok(s.to_string());
-    }
-
-    let hostname = "localhost";
-    let port = 8087;
-    let url = format!("http://{}:{}", hostname, port);
-    if !bw_args.restart_agent
-        && let Err(e) =
-            TcpListener::bind(format!("{}:{}", hostname, port)).await
-    {
-        tracing::debug!(url = url, error = ?e, "found exists addr");
+    let url = &bw_args.api_url;
+    let hostname = url
+        .host_str()
+        .ok_or_else(|| anyhow!("not found host in {url}"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("not found port in {url}"))?;
+    let url = url.to_string();
+    // 如果 addr 被使用则跳过
+    if addr_in_use((hostname, port)).await? {
         return Ok(url);
     }
 
+    // 启动 serve
     spawn_daemon(hostname, port).await?;
-    wait_port_ready(hostname, port, Duration::from_secs(5)).await?;
+    wait_tcp_port((hostname, port), false, Duration::from_secs(2)).await?;
     Ok(url)
 }
 
 async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
-    if serve_args.daemon {
-        return bw_serve_daemon(serve_args).await;
-    }
     if serve_args.stop {
         return bw_serve_stop(serve_args).await;
     }
-    if serve_args.restart {
-        return bw_serve_restart(serve_args).await;
+    if serve_args.daemon {
+        return bw_serve_daemon(serve_args).await;
+    }
+
+    if serve_args.restart
+        && let Err(e) = bw_serve_stop(serve_args).await
+    {
+        tracing::info!(error = %e, "bw serve stopped")
     }
 
     let bw_path = serve_args.bw_path.clone();
@@ -293,36 +283,41 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     Ok(())
 }
 
+async fn addr_in_use(addr: impl ToSocketAddrs + Debug) -> Result<bool> {
+    tracing::trace!(addr = ?addr, "checking if addr in use");
+    TcpListener::bind(addr)
+        .await
+        .map(|_| false)
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                Ok(true)
+            } else {
+                Err(e)
+            }
+        })
+        .map_err(Into::into)
+}
+
 /// --daemon：端口空闲则后台拉起，否则报错
 async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
-    match TcpListener::bind(format!(
-        "{}:{}",
-        serve_args.hostname, serve_args.port
-    ))
-    .await
+    if serve_args.restart
+        && let Err(e) = bw_serve_stop(serve_args).await
     {
-        // 端口空闲，可后台拉起
-        Ok(_) => {}
-        // 端口已被监听 → 已运行，报错提示
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            bail!(
-                "port {}:{} already in use, use --restart to restart daemon",
-                serve_args.hostname,
-                serve_args.port
-            );
-        }
-        // 其他错误（如权限）如实报错
-        Err(e) => bail!(
-            "failed to check port {}:{}: {e}",
+        tracing::info!(error = %e, "failed to stopping bw serve when try restart");
+    }
+    // 检查端口是否空闲
+    if addr_in_use((&*serve_args.hostname, serve_args.port)).await? {
+        bail!(
+            "port {}:{} already in use, use --restart to restart daemon",
             serve_args.hostname,
             serve_args.port
-        ),
+        )
     }
     spawn_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_ready(
-        &serve_args.hostname,
-        serve_args.port,
-        Duration::from_secs(5),
+    wait_tcp_port(
+        (&*serve_args.hostname, serve_args.port),
+        false,
+        Duration::from_secs(2),
     )
     .await?;
     Ok(())
@@ -331,29 +326,10 @@ async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
 /// --stop：优雅终止后台 daemon
 async fn bw_serve_stop(serve_args: &BWServeArgs) -> Result<()> {
     stop_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_free(
-        &serve_args.hostname,
-        serve_args.port,
-        Duration::from_secs(5),
-    )
-    .await?;
-    Ok(())
-}
-
-/// --restart：stop → 等端口释放 → 拉起 → 等就绪
-async fn bw_serve_restart(serve_args: &BWServeArgs) -> Result<()> {
-    stop_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_free(
-        &serve_args.hostname,
-        serve_args.port,
-        Duration::from_secs(5),
-    )
-    .await?;
-    spawn_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_port_ready(
-        &serve_args.hostname,
-        serve_args.port,
-        Duration::from_secs(5),
+    wait_tcp_port(
+        (&*serve_args.hostname, serve_args.port),
+        true,
+        Duration::from_secs(2),
     )
     .await?;
     Ok(())
@@ -373,8 +349,9 @@ fn daemon_args(hostname: &str, port: u16) -> Vec<String> {
 /// 向运行中的 daemon 发送优雅关闭请求
 async fn stop_daemon(hostname: &str, port: u16) -> Result<()> {
     let url = format!("http://{}:{}/__bwrap/shutdown", hostname, port);
+    trace!(url = url, "sending shutdown request");
     let resp = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(3))
         .build()?
         .post(&url)
         .send()
@@ -386,51 +363,21 @@ async fn stop_daemon(hostname: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-/// 等待端口释放（daemon 停止监听），超时返回错误
-async fn wait_port_free(
-    hostname: &str,
-    port: u16,
+async fn wait_tcp_port(
+    addr: impl ToSocketAddrs + Debug,
+    free_or_ready: bool,
     timeout: Duration,
 ) -> Result<()> {
     let deadline = std::time::Instant::now() + timeout;
+    let interval = Duration::from_millis(100);
     loop {
-        if TcpListener::bind(format!("{}:{}", hostname, port))
-            .await
-            .is_ok()
-        {
+        if addr_in_use(&addr).await.map(|used| free_or_ready != used)? {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
-            bail!(
-                "timeout waiting for port {}:{} to be released",
-                hostname,
-                port
-            );
+            bail!("timeout waiting for port {:?} to be released", addr);
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-/// 等待端口就绪（daemon 已监听），超时返回错误
-async fn wait_port_ready(
-    hostname: &str,
-    port: u16,
-    timeout: Duration,
-) -> Result<()> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match TcpListener::bind(format!("{}:{}", hostname, port)).await {
-            // 端口已被监听（Address already in use）→ 视为就绪
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                return Ok(());
-            }
-            // 绑定成功（端口空闲）或非 AddrInUse 错误（如权限）→ 继续等待
-            _ => {}
-        }
-        if std::time::Instant::now() >= deadline {
-            bail!("timeout waiting for daemon at {}:{}", hostname, port);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(interval).await;
     }
 }
 
@@ -438,7 +385,6 @@ async fn wait_port_ready(
 mod tests {
     use super::*;
     use clap::Parser;
-    use tokio::net;
 
     #[test]
     fn serve_daemon_flag_parses() {
@@ -511,40 +457,6 @@ mod tests {
         let host = server.host();
         let port = server.port();
         let res = stop_daemon(&host, port).await;
-        assert!(res.is_err());
-    }
-
-    #[tokio::test]
-    async fn wait_port_free_when_released() {
-        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        // 端口被占用时 wait_port_free 应超时
-        let res =
-            wait_port_free("127.0.0.1", port, Duration::from_millis(200)).await;
-        assert!(res.is_err());
-        drop(listener);
-        wait_port_free("127.0.0.1", port, Duration::from_secs(1))
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn wait_port_ready_when_listening() {
-        // 端口被占用（有监听）→ wait_port_ready 应立即返回 Ok
-        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let port = addr.port();
-        wait_port_ready("127.0.0.1", port, Duration::from_secs(1))
-            .await
-            .unwrap();
-
-        // 释放后无监听 → wait_port_ready 应超时
-        // 注意：不能用特权端口 1（普通用户 bind 返回 PermissionDenied 会被误判为"就绪"）
-        // 也不能用"bind 拿端口再释放"的方式（并发测试下端口可能被其他测试复用）。
-        // 端口 0 表示"自动分配"，bind 必然成功且永远不会是 AddrInUse → 必然走到超时路径。
-        let res =
-            wait_port_ready("127.0.0.1", 0, Duration::from_millis(200)).await;
         assert!(res.is_err());
     }
 }
