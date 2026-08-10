@@ -210,6 +210,9 @@ async fn idle_lock(s: &mut AppState) {
         {
             tracing::error!(error = %e, "failed to killing bw serve daemon");
         }
+        if let Err(e) = s.shutdown_tx.send(true) {
+            tracing::error!(error = ?e, "failed to sending shutdown");
+        }
     });
     *lock = Some(IdleLockTask { deadline_tx: tx });
 }

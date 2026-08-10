@@ -30,12 +30,15 @@ async fn main() -> Result<()> {
         .try_init()?;
     use BWCommands::*;
     match &cli.cmd {
-        Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await?,
-        Some(List(args)) => bw_list(&cli.bw_args, args).await?,
-        Some(Status) => bw_status(&cli.bw_args).await?,
-        Some(Serve(serve_args)) => bw_serve(&cli.bw_args, serve_args).await?,
-        None => {}
+        Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await,
+        Some(List(args)) => bw_list(&cli.bw_args, args).await,
+        Some(Status) => bw_status(&cli.bw_args).await,
+        Some(Serve(serve_args)) => bw_serve(&cli.bw_args, serve_args).await,
+        None => Ok(()),
     }
+    .inspect_err(
+        |e| tracing::error!(error = %e, cli = ?cli, "failed to run cmd"),
+    )?;
     Ok(())
 }
 
@@ -179,7 +182,7 @@ const PROJECTDIRS: LazyCell<ProjectDirs> = LazyCell::new(|| {
         .expect("not found project dirs")
 });
 /// 以当前可执行文件拉起后台 daemon（`bwrap serve --hostname --port`）
-async fn spawn_daemon(hostname: &str, port: u16) -> Result<()> {
+async fn spawn_daemon(hostname: &str, port: u16) -> Result<process::Child> {
     let log_path = PROJECTDIRS.cache_dir().join("daemon.log");
     if let Some(pp) = log_path.parent() {
         fs::create_dir_all(pp).await?
@@ -227,7 +230,7 @@ async fn spawn_daemon(hostname: &str, port: u16) -> Result<()> {
     }
     let child = cmd.spawn()?;
     tracing::info!(cmd = ?cmd, child = ?child, "spawned agent server");
-    Ok(())
+    Ok(child)
 }
 
 async fn get_api_url_or_start_bw_serve_daemon(
@@ -247,15 +250,31 @@ async fn get_api_url_or_start_bw_serve_daemon(
     }
 
     // 启动 serve
-    spawn_daemon(hostname, port).await?;
-    wait_tcp_port((hostname, port), false, Duration::from_secs(2)).await?;
+    start_bw_serve_daemon(hostname, port).await?;
     Ok(url)
+}
+
+async fn start_bw_serve_daemon(hostname: &str, port: u16) -> Result<()> {
+    let mut child = spawn_daemon(hostname, port).await?;
+    wait_tcp_port((hostname, port), false, Duration::from_secs(2))
+        .await
+        // 超时时检查后台进程是否存在
+        .map_err(|e| match child.try_wait() {
+            Ok(Some(s)) => e.context(format!("daemon exited status={}", s)),
+            Err(e1) => e.context(e1),
+            Ok(None) => e,
+        })?;
+    Ok(())
 }
 
 async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     if serve_args.stop {
         return bw_serve_stop(serve_args).await;
     }
+    // 检查是否解锁
+    let name = "BW_SESSION";
+    std::env::var(name).map_err(|e| anyhow!("{} {} for to unlock", name, e))?;
+
     if serve_args.daemon {
         return bw_serve_daemon(serve_args).await;
     }
@@ -294,8 +313,7 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
 }
 
 async fn addr_in_use(addr: impl ToSocketAddrs + Debug) -> Result<bool> {
-    tracing::trace!(addr = ?addr, "checking if addr in use");
-    TcpListener::bind(addr)
+    let res = TcpListener::bind(&addr)
         .await
         .map(|_| false)
         .or_else(|e| {
@@ -305,7 +323,9 @@ async fn addr_in_use(addr: impl ToSocketAddrs + Debug) -> Result<bool> {
                 Err(e)
             }
         })
-        .map_err(Into::into)
+        .map_err(Into::into);
+    tracing::trace!(result = ?res, addr = ?addr, "addr in use");
+    res
 }
 
 /// --daemon：端口空闲则后台拉起，否则报错
@@ -323,13 +343,7 @@ async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
             serve_args.port
         )
     }
-    spawn_daemon(&serve_args.hostname, serve_args.port).await?;
-    wait_tcp_port(
-        (&*serve_args.hostname, serve_args.port),
-        false,
-        Duration::from_secs(2),
-    )
-    .await?;
+    start_bw_serve_daemon(&serve_args.hostname, serve_args.port).await?;
     Ok(())
 }
 
@@ -385,7 +399,11 @@ async fn wait_tcp_port(
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
-            bail!("timeout waiting for port {:?} to be released", addr);
+            bail!(
+                "timeout waiting for port {:?} to be {}",
+                addr,
+                if free_or_ready { "released" } else { "used" }
+            );
         }
         tokio::time::sleep(interval).await;
     }
