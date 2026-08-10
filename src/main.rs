@@ -1,5 +1,6 @@
 use std::cell::LazyCell;
 use std::fmt::Debug;
+use std::io::IsTerminal;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -21,13 +22,18 @@ use tracing_subscriber::util::SubscriberInitExt;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = BWCli::parse();
+
+    let log_writer = std::io::stderr();
+    let is_ansi = log_writer.is_terminal();
     let (non_blk_io, _guard) =
-        tracing_appender::non_blocking(std::io::stderr());
+        tracing_appender::non_blocking(log_writer);
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(non_blk_io)
+        .with_ansi(is_ansi)
         .finish()
         .try_init()?;
+
     use BWCommands::*;
     match &cli.cmd {
         Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await,
