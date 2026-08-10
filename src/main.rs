@@ -25,8 +25,7 @@ async fn main() -> Result<()> {
 
     let log_writer = std::io::stderr();
     let is_ansi = log_writer.is_terminal();
-    let (non_blk_io, _guard) =
-        tracing_appender::non_blocking(log_writer);
+    let (non_blk_io, _guard) = tracing_appender::non_blocking(log_writer);
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(non_blk_io)
@@ -220,10 +219,7 @@ async fn spawn_daemon(hostname: &str, port: u16) -> Result<process::Child> {
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
+            rustix::process::setsid().map(|_| ()).map_err(Into::into)
         })
     };
     #[cfg(windows)]
