@@ -29,6 +29,7 @@ pub struct VaultItemLogin {
     // pub fido2_credentials: Vec<String>,
     pub username: Option<String>,
     pub password: Option<String>,
+    pub totp: Option<String>,
     // 可选字符串，对应 Python 中的 str | None
     pub password_revision_date: Option<String>,
 }

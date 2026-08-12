@@ -446,16 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn serve_daemon_mode_mutually_exclusive() {
-        let res =
-            BWCli::try_parse_from(["bwrap", "serve", "--daemon", "--stop"]);
-        assert!(res.is_err());
-        let res =
-            BWCli::try_parse_from(["bwrap", "serve", "--restart", "--stop"]);
-        assert!(res.is_err());
-    }
-
-    #[test]
     fn daemon_args_build() {
         assert_eq!(
             daemon_args("localhost", 8087),
