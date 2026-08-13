@@ -1,6 +1,6 @@
-use std::{fmt::Debug, process::Output};
+use std::fmt::Debug;
 
-use assert_cmd::assert::OutputAssertExt;
+use assert_cmd::{Command, assert::OutputAssertExt};
 use bwrap::bwserve_api::{
     BWServeGetRespData, BWServeResp, BWServeStatusRespData,
 };
@@ -14,7 +14,7 @@ use serde_json::{
 };
 use similar_asserts::assert_eq;
 
-async fn bwcmd<I, S, B>(args: I, body: B) -> Output
+async fn bwcmd<I, S, B>(args: I, body: B) -> Command
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str> + Debug,
@@ -37,12 +37,10 @@ where
         })
         .await;
 
-    assert_cmd::Command::cargo_bin("bw")
-        .expect("not found cargo bin")
-        .args(["--api-url", &server.url("/")])
-        .args(args.iter().map(AsRef::as_ref))
-        .output()
-        .unwrap()
+    let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
+    cmd.args(["--api-url", &server.url("/")])
+        .args(args.iter().map(AsRef::as_ref));
+    cmd
 }
 
 #[fixture]
@@ -125,7 +123,7 @@ async fn bw_get_item_stdout_test(item_gh: Value) {
         ))),
     })
     .unwrap();
-    let out = bwcmd(["get", "item", "github.com"], body).await;
+    let out = bwcmd(["get", "item", "github.com"], body).await.unwrap();
     let stdout_str = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
     out.assert()
@@ -144,11 +142,18 @@ async fn bw_get_item_stdout_test(item_gh: Value) {
 #[rstest]
 #[tokio::test]
 async fn bw_get_item_error_test() {
-    let body = json_enc(&BWServeResp {
+    let data = BWServeResp {
         success: false,
         message: Some("Not found.".to_string()),
         data: None::<String>,
-    })
-    .unwrap();
-    bwcmd(["get", "item", "xxx"], body).await.assert().failure();
+    };
+    bwcmd(["get", "item", "xxx"], json_enc(&data).unwrap())
+        .await
+        .env("RUST_LOG", "off")
+        .output()
+        .unwrap()
+        .assert()
+        .code(predicate::eq(1))
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::diff(data.message.to_owned().unwrap()).trim());
 }

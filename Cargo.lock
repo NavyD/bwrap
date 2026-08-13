@@ -343,6 +343,7 @@ dependencies = [
  "similar-asserts",
  "sonic-rs",
  "strum",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-appender",

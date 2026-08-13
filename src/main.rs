@@ -1,7 +1,7 @@
 use std::cell::LazyCell;
 use std::fmt::Debug;
 use std::io::IsTerminal;
-use std::process::Stdio;
+use std::process::{ExitCode, Stdio};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
@@ -19,8 +19,8 @@ use tokio::process;
 use tracing::{debug, error, info, instrument, trace, warn};
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let cli = BWCli::parse();
 
     let log_writer = std::io::stderr();
@@ -31,20 +31,38 @@ async fn main() -> Result<()> {
         .with_writer(non_blk_io)
         .with_ansi(is_ansi)
         .finish()
-        .try_init()?;
+        .init();
 
     use BWCommands::*;
-    match &cli.cmd {
+    let res = match &cli.cmd {
         Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await,
         Some(List(args)) => bw_list(&cli.bw_args, args).await,
         Some(Status) => bw_status(&cli.bw_args).await,
         Some(Serve(serve_args)) => bw_serve(&cli.bw_args, serve_args).await,
         None => Ok(()),
-    }
-    .inspect_err(
-        |e| tracing::error!(error = %e, cli = ?cli, "failed to run cmd"),
-    )?;
-    Ok(())
+    };
+    let Err(e) = res else {
+        return ExitCode::SUCCESS;
+    };
+
+    tracing::error!(error = %e, cli = ?cli, "failed to run cmd");
+    // 保证输出和 exitcode 与原 bw 一致
+    let (code, emsg) = e
+        .downcast::<BWCliError>()
+        .map(|cli_err| match cli_err {
+            BWCliError::Msg(s) => (1, s),
+        })
+        .unwrap_or_else(|e| (255, e.to_string()));
+    write_str(io::stderr(), emsg)
+        .await
+        .expect("write str error");
+    code.into()
+}
+
+#[derive(Debug, thiserror::Error)]
+enum BWCliError {
+    #[error("{0}")]
+    Msg(String),
 }
 
 #[derive(Parser, Debug)]
@@ -115,29 +133,28 @@ async fn write_str(
     Ok(())
 }
 
-async fn handle_resp_err<T: Debug>(
-    resp_data: &bwserve_api::BWServeResp<T>,
-) -> Result<bool> {
-    if resp_data.success {
-        return Ok(false);
-    }
+trait RespErrHandler<T> {
+    fn handle_resp_err(self) -> Result<bwserve_api::BWServeResp<T>>;
+}
+impl<T: Debug> RespErrHandler<T> for Result<bwserve_api::BWServeResp<T>> {
+    fn handle_resp_err(self) -> Result<bwserve_api::BWServeResp<T>> {
+        let resp_data = self?;
+        if resp_data.success {
+            return Ok(resp_data);
+        }
 
-    let Some(msg) = &resp_data.message else {
-        bail!("invalid response data: {:?}", resp_data)
-    };
-    // 原 bw get 只需要输出 mes 即可
-    write_str(io::stderr(), msg).await?;
-    Ok(true)
+        let Some(msg) = resp_data.message else {
+            bail!("invalid response data: {:?}", resp_data)
+        };
+        Err(BWCliError::Msg(msg).into())
+    }
 }
 
 async fn bw_get(bw_args: &BWArgs, get_args: &BWGetArgs) -> Result<()> {
     let api = bwserve_api::BWServeApi::new(
         &get_api_url_or_start_bw_serve_daemon(bw_args).await?,
     )?;
-    let resp_data = api.get(get_args).await?;
-    if handle_resp_err(&resp_data).await? {
-        return Ok(());
-    }
+    let resp_data = api.get(get_args).await.handle_resp_err()?;
 
     use bwserve_api::BWServeGetRespData::*;
     let s = match resp_data.data {
@@ -153,10 +170,7 @@ async fn bw_list(bw_args: &BWArgs, list_args: &BwListArgs) -> Result<()> {
     let api = bwserve_api::BWServeApi::new(
         &get_api_url_or_start_bw_serve_daemon(bw_args).await?,
     )?;
-    let resp_data = api.list(list_args).await?;
-    if handle_resp_err(&resp_data).await? {
-        return Ok(());
-    }
+    let resp_data = api.list(list_args).await.handle_resp_err()?;
 
     let Some(data) = &resp_data.data else {
         bail!("invalid response: {:?}", resp_data)
@@ -170,10 +184,7 @@ async fn bw_status(bw_args: &BWArgs) -> Result<()> {
     let api = bwserve_api::BWServeApi::new(
         &get_api_url_or_start_bw_serve_daemon(bw_args).await?,
     )?;
-    let resp_data = api.status().await?;
-    if handle_resp_err(&resp_data).await? {
-        return Ok(());
-    }
+    let resp_data = api.status().await.handle_resp_err()?;
 
     let Some(data) = &resp_data.data else {
         bail!("invalid response: {:?}", resp_data)
