@@ -1,9 +1,9 @@
 use std::any::Any;
-use std::cell::LazyCell;
 use std::fmt::Debug;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus, Stdio};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -339,13 +339,14 @@ async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
     Ok(())
 }
 
-const PROJECTDIRS: LazyCell<ProjectDirs> = LazyCell::new(|| {
+static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
     ProjectDirs::from("xyz", "navyd", env!("CARGO_BIN_NAME"))
         .expect("not found project dirs")
 });
+
 /// 以当前可执行文件拉起后台 daemon（`bwrap serve --hostname --port`）
 async fn spawn_daemon(hostname: &str, port: u16) -> Result<process::Child> {
-    let log_path = PROJECTDIRS.cache_dir().join("daemon.log");
+    let log_path = PROJECT_DIRS.cache_dir().join("daemon.log");
     if let Some(pp) = log_path.parent() {
         fs::create_dir_all(pp).await?
     }
