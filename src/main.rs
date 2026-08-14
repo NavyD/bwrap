@@ -1,15 +1,18 @@
+use std::any::Any;
 use std::cell::LazyCell;
 use std::fmt::Debug;
 use std::io::IsTerminal;
-use std::process::{ExitCode, Stdio};
+use std::path::PathBuf;
+use std::process::{ExitCode, ExitStatus, Stdio};
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use bwrap::agent_server::BWAgentConfig;
 use bwrap::bwserve_api::{BWGetArgs, BwListArgs};
 use bwrap::{agent_server, bwserve_api};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use directories::ProjectDirs;
+use rustix::path::Arg;
 use sonic_rs::to_string as ser_to_json;
 use tokio::fs::{self, File};
 use tokio::io::{self, AsyncWriteExt};
@@ -39,6 +42,7 @@ async fn main() -> ExitCode {
         Some(List(args)) => bw_list(&cli.bw_args, args).await,
         Some(Status) => bw_status(&cli.bw_args).await,
         Some(Serve(serve_args)) => bw_serve(&cli.bw_args, serve_args).await,
+        Some(Unlock(unlock_args)) => bw_unlock(&cli.bw_args, unlock_args).await,
         None => Ok(()),
     };
     let Err(e) = res else {
@@ -50,12 +54,17 @@ async fn main() -> ExitCode {
     let (code, emsg) = e
         .downcast::<BWCliError>()
         .map(|cli_err| match cli_err {
-            BWCliError::Msg(s) => (1, s),
+            BWCliError::Msg(s) => (1, Some(s)),
+            BWCliError::Follow(exit_status) => {
+                (exit_status.code().unwrap_or(255) as u8, None)
+            }
         })
-        .unwrap_or_else(|e| (255, e.to_string()));
-    write_str(io::stderr(), emsg)
-        .await
-        .expect("write str error");
+        .unwrap_or_else(|e| (255, Some(e.to_string())));
+    if let Some(emsg) = emsg {
+        write_str(io::stderr(), emsg)
+            .await
+            .expect("write str error");
+    }
     code.into()
 }
 
@@ -63,6 +72,8 @@ async fn main() -> ExitCode {
 enum BWCliError {
     #[error("{0}")]
     Msg(String),
+    #[error("{0}")]
+    Follow(ExitStatus),
 }
 
 #[derive(Parser, Debug)]
@@ -86,6 +97,8 @@ struct BWArgs {
     // NOTE: 私有选项
     #[arg(long, global = true, default_value = "http://localhost:8087")]
     api_url: url::Url,
+    #[arg(long, default_value = "bw")]
+    bw_path: String,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -101,8 +114,6 @@ struct BWServeArgs {
         default_value = "10m",
     )]
     idle_lock_timeout: Duration,
-    #[arg(long, default_value = "bw")]
-    bw_path: String,
 
     /// 以后台 daemon 方式启动并退出
     #[arg(long)]
@@ -115,12 +126,28 @@ struct BWServeArgs {
     restart: bool,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(clap::Args, Debug, Clone)]
+struct BWUnlockArgs {
+    #[arg(long)]
+    check: bool,
+    #[arg(long)]
+    passwordenv: Option<String>,
+    #[arg(long)]
+    passwordfile: Option<String>,
+
+    password: Option<String>,
+}
+
+#[derive(Subcommand, Debug, strum::Display)]
+// 注意： clap subcommand 默认的命令规则是 kebab-case
+// 参考 `#[command(rename_all = "snake_case")]`
+#[strum(serialize_all = "kebab-case")]
 enum BWCommands {
     Get(BWGetArgs),
     List(BwListArgs),
     Serve(BWServeArgs),
     Status,
+    Unlock(BWUnlockArgs),
 }
 
 async fn write_str(
@@ -190,6 +217,125 @@ async fn bw_status(bw_args: &BWArgs) -> Result<()> {
         bail!("invalid response: {:?}", resp_data)
     };
     write_str(io::stdout(), ser_to_json(&data.template)?).await?;
+    Ok(())
+}
+
+macro_rules! field {
+    ($obj:ident.$field:ident) => {
+        (stringify!($field), $obj.$field)
+    };
+    (&$obj:ident.$field:ident) => {
+        (stringify!($field), &$obj.$field)
+    };
+}
+/// 通过 struct 字段名获取 clap 配置的选项名如 struct.config -> --config|-c
+fn get_clap_opt(c: &clap::Command, field_name: &str) -> Result<String> {
+    c.get_arguments()
+        .find(|a| a.get_id() == field_name)
+        .and_then(|a| {
+            a.get_long()
+                .map(|n| format!("--{}", n))
+                .or_else(|| a.get_short().map(|n| format!("-{}", n)))
+        })
+        .ok_or_else(|| anyhow!("not found arg with id={}", field_name))
+}
+
+struct ClapSubCmdName {
+    cmd: clap::Command,
+    subcmd: clap::Command,
+    subcmd_name: String,
+}
+/// 原 command().try_get_matches()? 会读取 env::args_os()
+/// 分离避免测试时不存在会导致 panic
+fn get_clap_subcommand() -> Result<ClapSubCmdName> {
+    let cmd = BWCli::command();
+    let subcmd_name = cmd
+        .clone()
+        .try_get_matches()?
+        .subcommand_name()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("not found subcommand name"))?;
+    cmd.find_subcommand(&subcmd_name)
+        .cloned()
+        .map(|subcmd| ClapSubCmdName {
+            cmd,
+            subcmd,
+            subcmd_name,
+        })
+        .ok_or_else(|| anyhow!("not found subcommand"))
+}
+
+/// 构建 bw unlock 列表参数
+async fn get_bw_unlock_cmd_args(
+    bw_args: &BWArgs,
+    unlock_args: &BWUnlockArgs,
+    clapcmd: ClapSubCmdName,
+) -> Result<Vec<String>> {
+    let mut cmd_args = vec![
+        find_real_bw(&bw_args.bw_path)
+            .await?
+            .to_string_lossy()
+            .to_string(),
+        clapcmd.subcmd_name,
+    ];
+    if let Some(pw) = unlock_args.password.to_owned() {
+        cmd_args.push(pw);
+    }
+
+    let mut extend_args = |(name, val): (&str, &dyn Any)| -> Result<()> {
+        // 从子命令或父命令中获取选项
+        let opt_name = get_clap_opt(&clapcmd.subcmd, name)
+            .or_else(|e| get_clap_opt(&clapcmd.cmd, name).context(e))?;
+        if let Some(v) = val.downcast_ref::<bool>() {
+            if *v {
+                cmd_args.push(opt_name);
+            }
+            return Ok(());
+        }
+        if let Some(val) = val.downcast_ref::<Option<String>>() {
+            if let Some(val) = val.to_owned() {
+                cmd_args.push(opt_name);
+                cmd_args.push(val);
+            }
+            return Ok(());
+        }
+        bail!("Unsupported type of arg={:?}", val);
+    };
+    // 编译期保证不会出现错误
+    extend_args(field!(&unlock_args.check))?;
+    extend_args(field!(&unlock_args.passwordenv))?;
+    extend_args(field!(&unlock_args.passwordfile))?;
+    extend_args(field!(&bw_args.raw))?;
+    Ok(cmd_args)
+}
+
+async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
+    let cmd_args =
+        get_bw_unlock_cmd_args(bw_args, unlock_args, get_clap_subcommand()?)
+            .await?;
+    info!(cmd_args = ?cmd_args, "spawning command");
+    let s = process::Command::new(&cmd_args[0])
+        .args(&cmd_args[1..])
+        // .stdout(Stdio::piped())
+        .spawn()?
+        .wait()
+        .await?;
+    debug!(status = ?s, "got status");
+    if !s.success() {
+        return Err(BWCliError::Follow(s).into());
+    }
+
+    // 解锁后停止后台进程
+    let cli_args = ["bw", "serve", "--stop"];
+    debug!(cli_args = ?cli_args, "parsing cli for bw serve daemon");
+    let cli = BWCli::parse_from(cli_args);
+    trace!(cli = ?cli, "bw serve args parsed");
+    let Some(BWCommands::Serve(serve_args)) = &cli.cmd else {
+        bail!("failed to parse serve args: {:?}", cli_args);
+    };
+    if let Err(e) = bw_serve_stop(serve_args).await {
+        info!(error = %e, "failed to stopping bw serve");
+    }
     Ok(())
 }
 
@@ -280,7 +426,7 @@ async fn start_bw_serve_daemon(hostname: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
+async fn bw_serve(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     if serve_args.stop {
         return bw_serve_stop(serve_args).await;
     }
@@ -298,31 +444,33 @@ async fn bw_serve(_bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
         tracing::info!(error = %e, "bw serve stopped")
     }
 
-    let bw_path = tokio::task::spawn_blocking({
-        let bw_path = serve_args.bw_path.clone();
-        move || {
-            // 检查 bw bin 路径，如果与当前 bwrap bin
-            // 重命名的文件路径一致则使用另一个 bw
-            let exe = std::env::current_exe()?;
-            let mut it = which::which_all(&bw_path)?;
-            it.next()
-                .and_then(|p| if p == exe { it.next() } else { Some(p) })
-                .ok_or_else(|| anyhow!("not found bin {}", bw_path))
-        }
-    })
-    .await??;
     let listen_url: url::Url = if serve_args.hostname.starts_with("unix://") {
         serve_args.hostname.parse()?
     } else {
         format!("http://{}:{}", serve_args.hostname, serve_args.port).parse()?
     };
     agent_server::start(BWAgentConfig {
-        bw_path,
+        bw_path: find_real_bw(&bw_args.bw_path).await?,
         listen_url: listen_url.to_string(),
         idle_lock_timeout: serve_args.idle_lock_timeout,
     })
     .await?;
     Ok(())
+}
+
+async fn find_real_bw(path: impl Into<String>) -> Result<PathBuf> {
+    let path = path.into();
+    tokio::task::spawn_blocking(move || {
+        // let path = path.into();
+        // 检查 bw bin 路径，如果与当前 bwrap bin
+        // 重命名的文件路径一致则使用另一个 bw
+        let exe = std::env::current_exe()?;
+        let mut it = which::which_all(&path)?;
+        it.next()
+            .and_then(|p| if p == exe { it.next() } else { Some(p) })
+            .ok_or_else(|| anyhow!("not found bin {}", path))
+    })
+    .await?
 }
 
 async fn addr_in_use(addr: impl ToSocketAddrs + Debug) -> Result<bool> {
@@ -346,7 +494,9 @@ async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
     if serve_args.restart
         && let Err(e) = bw_serve_stop(serve_args).await
     {
-        tracing::info!(error = %e, "failed to stopping bw serve when try restart");
+        tracing::info!(
+            error = %e, "failed to stopping bw serve when try restart"
+        );
     }
     // 检查端口是否空闲
     if addr_in_use((&*serve_args.hostname, serve_args.port)).await? {
@@ -424,8 +574,45 @@ async fn wait_tcp_port(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use clap::Parser;
+    use rstest::rstest;
+    use similar_asserts::assert_eq;
+
+    #[rstest]
+    #[case(&["/bw", "unlock"])]
+    #[case(&["/bw", "unlock", "--raw"])]
+    #[case(&["/bw", "unlock", "--raw", "--passwordfile", "/a/b.file"])]
+    #[case(&["/bw", "unlock", "--raw", "somepw"])]
+    #[tokio::test]
+    async fn get_bw_unlock_cmd_args_test(#[case] args: &[&str]) {
+        let cli = BWCli::parse_from(args);
+        let Some(BWCommands::Unlock(unlock_args)) = &cli.cmd else {
+            panic!("invalid subcommand {:?}", cli.cmd);
+        };
+        // 原 command().try_get_matches()? 会读取 env::args_os()
+        // 而测试时不存在会导致 panic
+        // get_clap_subcommand()
+        let cmd = BWCli::command();
+        let subcmd_name = args[1].to_string();
+        let subcmd = cmd.find_subcommand(&subcmd_name).cloned().unwrap();
+        let cmd_args = get_bw_unlock_cmd_args(
+            &cli.bw_args,
+            unlock_args,
+            ClapSubCmdName {
+                cmd,
+                subcmd,
+                subcmd_name,
+            },
+        )
+        .await
+        .unwrap();
+        // NOTE: bw path 可能由于本地环境的影响返回实际的路径，所以跳过检查
+        assert_eq!(cmd_args.len(), args.len());
+        // 返回的参数顺序与原始不一致
+        assert!(cmd_args[1..].iter().all(|e| args.contains(&e.as_str())));
+    }
 
     #[test]
     fn serve_daemon_flag_parses() {
