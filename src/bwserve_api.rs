@@ -175,6 +175,7 @@ impl BWServeApi {
             // [PM-20220] feat: Add support for fd and unix socket bindings
             // NOTE: 暂未支持 fd+: UnixSocketProvider from raw fd #2812
             // https://github.com/seanmonstar/reqwest/issues/2812
+            #[cfg(unix)]
             "unix" => {
                 client_build = client_build.unix_socket(api_url.path());
                 // bw serve 未指定端口时默认端口为 8087

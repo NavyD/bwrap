@@ -12,7 +12,6 @@ use bwrap::bwserve_api::{BWGetArgs, BwListArgs};
 use bwrap::{agent_server, bwserve_api};
 use clap::{CommandFactory, Parser, Subcommand};
 use directories::ProjectDirs;
-use rustix::path::Arg;
 use sonic_rs::to_string as ser_to_json;
 use tokio::fs::{self, File};
 use tokio::io::{self, AsyncWriteExt};
