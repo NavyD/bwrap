@@ -22,6 +22,10 @@ use tokio::process;
 use tracing::{debug, error, info, instrument, trace, warn};
 use tracing_subscriber::util::SubscriberInitExt;
 
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let cli = BWCli::parse();
