@@ -168,18 +168,20 @@ async fn middleware_idle_lock<B>(
     State(mut s): State<AppState>,
     resp: Response<B>,
 ) -> Response<B> {
-    idle_lock(&mut s).await;
+    idle_shutdown(&mut s).await;
     resp
 }
 
-async fn idle_lock(s: &mut AppState) {
+async fn idle_shutdown(s: &mut AppState) {
     let mut lock = s.idle_lock_task.lock().await;
     let deadline = time::Instant::now() + s.args.idle_lock_timeout;
     if let Some(t) = &*lock {
         let Err(e) = t.deadline_tx.send(deadline) else {
             return;
         };
-        tracing::info!(error = %e, state = ?s, "redo idle lock task when sending error")
+        tracing::info!(
+            error = %e, state = ?s, "redo idle lock task when sending error"
+        )
     }
 
     let (tx, mut rx) = watch::channel(deadline);
@@ -201,14 +203,6 @@ async fn idle_lock(s: &mut AppState) {
                     );
                 }
             }
-        }
-        // 移除 bw serve 进程
-        let mut lock = s.bw_serve_child.lock().await;
-        tracing::debug!("killing child");
-        if let Some(mut child) = lock.take()
-            && let Err(e) = child.kill().await
-        {
-            tracing::error!(error = %e, "failed to killing bw serve daemon");
         }
         if let Err(e) = s.shutdown_tx.send(true) {
             tracing::error!(error = ?e, "failed to sending shutdown");
