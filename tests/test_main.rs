@@ -237,6 +237,7 @@ exec "{}" {} -- "$@"
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn bw_unlock_stop_daemon_test() {
     let stdout = "bw-session-xx";
     let bw_path = gen_mock_bw().stdout(stdout).call().unwrap();
@@ -261,30 +262,38 @@ async fn bw_unlock_stop_daemon_test() {
         .stdout(predicate::str::diff(stdout));
 }
 
-// #[tokio::test]
-// async fn bw_unlock_restart_test() {
-//     let stdout = "bw-session-xx";
-//     let bw_path = gen_mock_bw().stdout(stdout).call().unwrap();
-//     // println!("bw_path={:?}", bw_path);
-//     // sleep(Duration::from_secs(30)).await;
-//
-//     let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
-//     let server = MockServer::start_async().await;
-//     server
-//         .mock_async(|when, then| {
-//             when.method(POST).path("/__bwrap/shutdown");
-//             then.status(200);
-//         })
-//         .await;
-//     // server.mock_async(|when, then| {
-//     //     when.method(method)
-//     // })
-//
-//     let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
-//     cmd.args(args)
-//         .output()
-//         .unwrap()
-//         .assert()
-//         .success()
-//         .stdout(predicate::str::diff(stdout));
-// }
+const ENV_RUST_LOG: &str = "error,bwrap=trace,bw=trace";
+
+#[test]
+#[cfg(unix)]
+fn bw_unlock_restart_test() {
+    let stdout = "bw-session-xx";
+    let bw_path = gen_mock_bw().stdout(stdout).call().unwrap();
+
+    let args = vec![
+        "unlock",
+        "--raw",
+        "--restart",
+        "--bw-path",
+        bw_path.to_str().unwrap(),
+    ];
+    let res = std::panic::catch_unwind(|| {
+        Command::cargo_bin("bw")
+            .expect("not found cargo bin")
+            .args(args)
+            .env("RUST_LOG", ENV_RUST_LOG)
+            .output()
+            .unwrap()
+            .assert()
+            .success()
+            .stdout(predicate::str::diff(stdout).trim());
+    });
+    Command::cargo_bin("bw")
+        .expect("not found cargo bin")
+        .args(["serve", "--stop"])
+        .output()
+        .unwrap()
+        .assert()
+        .success();
+    assert!(res.is_ok(), "result is error: {:?}", res);
+}
