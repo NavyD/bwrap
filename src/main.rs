@@ -102,6 +102,8 @@ struct BWArgs {
     api_url: url::Url,
     #[arg(long, global = true, default_value = "bw")]
     bw_path: String,
+    #[arg(long, global = true)]
+    bw_serve_url: Option<url::Url>,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -482,6 +484,7 @@ async fn bw_serve(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
         bw_path: find_real_bw(&bw_args.bw_path).await?,
         listen_url: listen_url.to_string(),
         idle_lock_timeout: serve_args.idle_lock_timeout,
+        bw_serve_url: bw_args.bw_serve_url.clone(),
     })
     .await?;
     Ok(())

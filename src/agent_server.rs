@@ -23,10 +23,15 @@ pub struct BWAgentConfig {
     pub idle_lock_timeout: time::Duration,
     pub bw_path: PathBuf,
     pub listen_url: String,
+    pub bw_serve_url: Option<Url>,
 }
 
 pub async fn start(args: BWAgentConfig) -> Result<()> {
-    let bw_serve_url = get_bw_serve_url().await?;
+    let bw_serve_url = if let Some(url) = &args.bw_serve_url {
+        url.clone()
+    } else {
+        get_bw_serve_url().await?
+    };
     // 启动 bw serve 进程并检查问题
     let bw_child = spawn_bw_serve(&args.bw_path, &bw_serve_url).await?;
 
@@ -223,6 +228,7 @@ mod tests {
                 idle_lock_timeout: Duration::from_secs(60),
                 bw_path: PathBuf::from("/nonexistent/bw"),
                 listen_url: "http://localhost:8087".to_string(),
+                bw_serve_url: None,
             }),
             idle_lock_task: Arc::new(Mutex::new(None)),
             bw_serve_child: Arc::new(Mutex::new(None)),
