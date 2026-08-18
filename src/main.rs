@@ -137,6 +137,8 @@ struct BWUnlockArgs {
     passwordenv: Option<String>,
     #[arg(long)]
     passwordfile: Option<String>,
+    #[arg(long, short = 'R', requires = "raw")]
+    restart: bool,
 
     password: Option<String>,
 }
@@ -312,31 +314,54 @@ async fn get_bw_unlock_cmd_args(
     Ok(cmd_args)
 }
 
+const BW_SESSION_NAME: &str = "BW_SESSION";
+
 async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
     let cmd_args =
         get_bw_unlock_cmd_args(bw_args, unlock_args, get_clap_subcommand()?)
             .await?;
     info!(cmd_args = ?cmd_args, "spawning command");
-    let s = process::Command::new(&cmd_args[0])
+
+    let output = process::Command::new(&cmd_args[0])
         .args(&cmd_args[1..])
-        // .stdout(Stdio::piped())
+        .stdout(if unlock_args.restart {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .spawn()?
-        .wait()
+        .wait_with_output()
         .await?;
-    debug!(status = ?s, "got status");
-    if !s.success() {
-        return Err(BWCliError::Follow(s).into());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.is_empty() {
+        write_str(io::stdout(), &stdout).await?;
+    }
+    trace!(output = ?output, "got output");
+    if !output.status.success() {
+        return Err(BWCliError::Follow(output.status).into());
     }
 
-    // 解锁后停止后台进程
-    let cli_args = ["bw", "serve", "--stop"];
-    debug!(cli_args = ?cli_args, "parsing cli for bw serve daemon");
-    let cli = BWCli::parse_from(cli_args);
+    let mut cli_args =
+        vec!["bw", "serve", "--api-url", bw_args.api_url.as_str()];
+    if unlock_args.restart {
+        if !bw_args.raw {
+            bail!("--restart flag required --raw")
+        }
+        // SAFETY: 单线程安全性
+        unsafe {
+            std::env::set_var(BW_SESSION_NAME, stdout.to_string());
+        }
+        cli_args.extend_from_slice(&["--restart", "--daemon"]);
+    } else {
+        cli_args.push("--stop")
+    }
+    let cli = BWCli::try_parse_from(&cli_args)
+        .with_context(|| format!("cli_args={:?}", cli_args))?;
     trace!(cli = ?cli, "bw serve args parsed");
     let Some(BWCommands::Serve(serve_args)) = &cli.cmd else {
         bail!("failed to parse serve args: {:?}", cli_args);
     };
-    if let Err(e) = bw_serve_stop(serve_args).await {
+    if let Err(e) = bw_serve(&cli.bw_args, serve_args).await {
         info!(error = %e, "failed to stopping bw serve");
     }
     Ok(())
@@ -435,8 +460,8 @@ async fn bw_serve(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
         return bw_serve_stop(serve_args).await;
     }
     // 检查是否解锁
-    let name = "BW_SESSION";
-    std::env::var(name).map_err(|e| anyhow!("{} {} for to unlock", name, e))?;
+    std::env::var(BW_SESSION_NAME)
+        .map_err(|e| anyhow!("{} {} for to unlock", BW_SESSION_NAME, e))?;
 
     if serve_args.daemon {
         return bw_serve_daemon(serve_args).await;
