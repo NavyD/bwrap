@@ -1,9 +1,17 @@
 use std::fmt::Debug;
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use anyhow::{Context, Result};
 use assert_cmd::{Command, assert::OutputAssertExt};
 use bwrap::bwserve_api::{
     BWServeGetRespData, BWServeResp, BWServeStatusRespData,
 };
+use httpmock::Method::POST;
 use httpmock::{Method::GET, MockServer};
 use jsonpath_rust::JsonPath;
 use predicates::prelude::*;
@@ -157,3 +165,126 @@ async fn bw_get_item_error_test() {
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::diff(data.message.to_owned().unwrap()).trim());
 }
+
+#[tokio::test]
+async fn bw_unlock_when_bw_error_test() {
+    let exitcode = 111;
+    let bw_path = gen_mock_bw().exitcode(exitcode).call().unwrap();
+    let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
+    let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
+    cmd.args(args)
+        .output()
+        .unwrap()
+        .assert()
+        .code(predicate::eq(exitcode as i32));
+}
+
+static TMPDIR: LazyLock<tempfile::TempDir> =
+    LazyLock::new(|| tempfile::Builder::new().prefix("bw-").tempdir().unwrap());
+
+#[bon::builder]
+#[builder(on(String, into))]
+#[cfg(unix)]
+fn gen_mock_bw(
+    stdout: Option<String>,
+    stderr: Option<String>,
+    exitcode: Option<u8>,
+) -> Result<PathBuf> {
+    let id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+    let bw_path = TMPDIR.path().join(format!("bw-{}.sh", id));
+    let mut bw_sh_file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .mode(0o755)
+        .open(&bw_path)?;
+    let stdout_path = bw_path.with_added_extension("stdout");
+    let stderr_path = bw_path.with_added_extension("stderr");
+    let mut args = vec![];
+    if let Some(s) = stdout {
+        fs::write(&stdout_path, &s)?;
+        args.extend_from_slice(&[
+            "--stdout-file",
+            stdout_path.to_str().with_context(|| s)?,
+        ]);
+    }
+    if let Some(s) = stderr {
+        fs::write(&stderr_path, &s)?;
+        args.extend_from_slice(&[
+            "--stdout-file",
+            stderr_path.to_str().with_context(|| s)?,
+        ]);
+    }
+    let exitcode = exitcode.unwrap_or(0).to_string();
+    args.extend_from_slice(&["--exitcode", &exitcode]);
+
+    writeln!(
+        bw_sh_file,
+        r#"#!/usr/bin/sh
+exec "{}" {} -- "$@"
+"#,
+        env!("CARGO_BIN_EXE_mockbw"),
+        args.join(" ")
+    )?;
+
+    // 避免出现 zsh: text file busy: /tmp/bw-j16A3i.mock.sh/bw.sh
+    drop(bw_sh_file);
+    Ok(bw_path)
+}
+
+#[tokio::test]
+async fn bw_unlock_stop_daemon_test() {
+    let stdout = "bw-session-xx";
+    let bw_path = gen_mock_bw().stdout(stdout).call().unwrap();
+    // println!("bw_path={:?}", bw_path);
+    // sleep(Duration::from_secs(30)).await;
+
+    let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
+    let server = MockServer::start_async().await;
+    server
+        .mock_async(|when, then| {
+            when.method(POST).path("/__bwrap/shutdown");
+            then.status(200);
+        })
+        .await;
+
+    let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
+    cmd.args(args)
+        .output()
+        .unwrap()
+        .assert()
+        .success()
+        .stdout(predicate::str::diff(stdout));
+}
+
+// #[tokio::test]
+// async fn bw_unlock_restart_test() {
+//     let stdout = "bw-session-xx";
+//     let bw_path = gen_mock_bw().stdout(stdout).call().unwrap();
+//     // println!("bw_path={:?}", bw_path);
+//     // sleep(Duration::from_secs(30)).await;
+//
+//     let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
+//     let server = MockServer::start_async().await;
+//     server
+//         .mock_async(|when, then| {
+//             when.method(POST).path("/__bwrap/shutdown");
+//             then.status(200);
+//         })
+//         .await;
+//     // server.mock_async(|when, then| {
+//     //     when.method(method)
+//     // })
+//
+//     let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
+//     cmd.args(args)
+//         .output()
+//         .unwrap()
+//         .assert()
+//         .success()
+//         .stdout(predicate::str::diff(stdout));
+// }

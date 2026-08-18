@@ -52,6 +52,7 @@ which = "8.0"
 
 [dev-dependencies]
 assert_cmd = "2.2"
+bon = "3.9"
 httpmock = "0.8"
 jsonpath-rust = "1.0"
 predicates = "3.1"
@@ -59,6 +60,7 @@ proptest = "1.11"
 rstest = "0.26"
 serde_json = "1.0"
 similar-asserts = "2.0"
+tempfile = "3.27"
 
 [target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
 mimalloc = "0.1"

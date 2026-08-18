@@ -100,7 +100,7 @@ struct BWArgs {
     // NOTE: 私有选项
     #[arg(long, global = true, default_value = "http://localhost:8087")]
     api_url: url::Url,
-    #[arg(long, default_value = "bw")]
+    #[arg(long, global = true, default_value = "bw")]
     bw_path: String,
 }
 
