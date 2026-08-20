@@ -46,6 +46,7 @@ async fn main() -> ExitCode {
         Some(Status) => bw_status(&cli.bw_args).await,
         Some(Serve(serve_args)) => bw_serve(&cli.bw_args, serve_args).await,
         Some(Unlock(unlock_args)) => bw_unlock(&cli.bw_args, unlock_args).await,
+        Some(External(sub_args)) => bw_external(&cli.bw_args, sub_args).await,
         None => Ok(()),
     };
     let Err(e) = res else {
@@ -155,6 +156,21 @@ enum BWCommands {
     Serve(BWServeArgs),
     Status,
     Unlock(BWUnlockArgs),
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+async fn bw_external(bw_args: &BWArgs, sub_args: &[String]) -> Result<()> {
+    let st = process::Command::new(&bw_args.bw_path)
+        .args(sub_args)
+        .spawn()
+        .with_context(|| format!("bw_args={:?}, args={:?}", bw_args, sub_args))?
+        .wait()
+        .await?;
+    if st.success() {
+        return Ok(());
+    }
+    Err(BWCliError::Follow(st).into())
 }
 
 async fn write_str(

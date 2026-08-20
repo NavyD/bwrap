@@ -182,6 +182,22 @@ async fn bw_unlock_when_bw_error_test() {
 static TMPDIR: LazyLock<tempfile::TempDir> =
     LazyLock::new(|| tempfile::Builder::new().prefix("bw-").tempdir().unwrap());
 
+#[derive(Clone, bon::Builder)]
+#[builder(on(String, into))]
+struct MockBW {
+    stdout: Option<String>,
+    stderr: Option<String>,
+    #[builder(default = 0)]
+    exitcode: u8,
+}
+fn mock_bw_path(bw: MockBW) -> Result<PathBuf> {
+    gen_mock_bw()
+        .maybe_stdout(bw.stdout)
+        .maybe_stderr(bw.stderr)
+        .exitcode(bw.exitcode)
+        .call()
+}
+
 #[bon::builder]
 #[builder(on(String, into))]
 #[cfg(unix)]
@@ -215,7 +231,7 @@ fn gen_mock_bw(
     if let Some(s) = stderr {
         fs::write(&stderr_path, &s)?;
         args.extend_from_slice(&[
-            "--stdout-file",
+            "--stderr-file",
             stderr_path.to_str().with_context(|| s)?,
         ]);
     }
@@ -296,4 +312,28 @@ fn bw_unlock_restart_test() {
         .assert()
         .success();
     assert!(res.is_ok(), "result is error: {:?}", res);
+}
+
+const BIN_NAME: &str = "bw";
+
+#[rstest]
+#[case(MockBW::builder().build(), &["sync"])]
+#[case(MockBW::builder().stdout("Your vault is locked.").build(), &["lock"])]
+#[case(
+    MockBW::builder().exitcode(121).stderr("unknown-subcmd error").build(),
+    &["unknown-subcmd"]
+)]
+fn bw_external_test(#[case] bw: MockBW, #[case] args: &[&str]) {
+    let bw_path = mock_bw_path(bw.clone()).unwrap();
+    Command::cargo_bin(BIN_NAME)
+        .unwrap()
+        .env("RUST_LOG", "off")
+        .args(["--bw-path", bw_path.to_str().unwrap()])
+        .args(args)
+        .output()
+        .unwrap()
+        .assert()
+        .code(predicate::eq(bw.exitcode as i32))
+        .stderr(predicate::str::diff(bw.stderr.unwrap_or("".to_string())))
+        .stdout(predicate::str::diff(bw.stdout.unwrap_or("".to_string())));
 }
