@@ -22,7 +22,8 @@ use serde_json::{
 };
 use similar_asserts::assert_eq;
 
-async fn bwcmd<I, S, B>(args: I, body: B) -> Command
+// mock server 在函数返回前被 drop，可能出现 404 not found
+async fn bwcmd<I, S, B>(args: I, body: B) -> (Command, MockServer)
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str> + Debug,
@@ -48,7 +49,7 @@ where
     let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
     cmd.args(["--api-url", &server.url("/")])
         .args(args.iter().map(AsRef::as_ref));
-    cmd
+    (cmd, server)
 }
 
 #[fixture]
@@ -110,14 +111,12 @@ async fn bw_status_stdout_test(
         message: None,
     })
     .unwrap();
-    bwcmd(["status"], body).await.assert().success().stdout(
-        predicate::str::is_empty()
-            .trim()
-            .not()
-            .and(predicate::function(|s| {
-                json_dec::<Value>(s).unwrap() == data
-            })),
-    );
+    let (mut cmd, _server) = bwcmd(["status"], body).await;
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::is_empty().trim().not().and(
+            predicate::function(|s| json_dec::<Value>(s).unwrap() == data),
+        ));
 }
 
 #[rstest]
@@ -131,7 +130,8 @@ async fn bw_get_item_stdout_test(item_gh: Value) {
         ))),
     })
     .unwrap();
-    let out = bwcmd(["get", "item", "github.com"], body).await.unwrap();
+    let (mut cmd, _server) = bwcmd(["get", "item", "github.com"], body).await;
+    let out = cmd.output().unwrap();
     let stdout_str = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
     out.assert()
@@ -155,9 +155,9 @@ async fn bw_get_item_error_test() {
         message: Some("Not found.".to_string()),
         data: None::<String>,
     };
-    bwcmd(["get", "item", "xxx"], json_enc(&data).unwrap())
-        .await
-        .env("RUST_LOG", "off")
+    let (mut cmd, _server) =
+        bwcmd(["get", "item", "xxx"], json_enc(&data).unwrap()).await;
+    cmd.env("RUST_LOG", "off")
         .output()
         .unwrap()
         .assert()
@@ -294,8 +294,8 @@ fn bw_unlock_restart_test() {
         bw_path.to_str().unwrap(),
     ];
     let res = std::panic::catch_unwind(|| {
-        Command::cargo_bin("bw")
-            .expect("not found cargo bin")
+        Command::cargo_bin(BIN_NAME)
+            .unwrap()
             .args(args)
             .env("RUST_LOG", ENV_RUST_LOG)
             .output()
@@ -304,8 +304,8 @@ fn bw_unlock_restart_test() {
             .success()
             .stdout(predicate::str::diff(stdout).trim());
     });
-    Command::cargo_bin("bw")
-        .expect("not found cargo bin")
+    Command::cargo_bin(BIN_NAME)
+        .unwrap()
         .args(["serve", "--stop"])
         .output()
         .unwrap()
