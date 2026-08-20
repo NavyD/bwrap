@@ -161,7 +161,9 @@ enum BWCommands {
 }
 
 async fn bw_external(bw_args: &BWArgs, sub_args: &[String]) -> Result<()> {
-    let st = process::Command::new(&bw_args.bw_path)
+    // NOTE: 必须配置 bw 否则默认使用的是当前 bw 可能导致无限循环
+    let bw_path = find_real_bw(&bw_args.bw_path).await?;
+    let st = process::Command::new(bw_path)
         .args(sub_args)
         .spawn()
         .with_context(|| format!("bw_args={:?}, args={:?}", bw_args, sub_args))?
