@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # linux x86_64 与 aarch64 用 zigbuild 交叉编译，固定 glibc 2.17 保证最大兼容
+          # （glibc 向后兼容：2.17 覆盖 RHEL7 及全部现代系统，本项目无 C 库依赖）
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            zigbuild: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            zigbuild: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            zigbuild: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # 交叉编译所需：zig 链接器 + cargo-zigbuild（仅 linux target）
+      - if: matrix.zigbuild
+        uses: goto-bus-stop/setup-zig@v2
+      - if: matrix.zigbuild
+        uses: taiki-e/install-action@cargo-zigbuild
+
+      - run: rustup target add ${{ matrix.target }}
+
+      - name: 构建（zigbuild）
+        if: matrix.zigbuild
+        run: cargo zigbuild --locked --release --target ${{ matrix.target }}.2.17
+
+      - name: 构建（windows 原生）
+        if: ${{ !matrix.zigbuild }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: 打包产物
+        shell: bash
+        run: |
+          mkdir -p dist
+          asset="bwrap-${{ github.ref_name }}-${{ matrix.target }}"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            tar -a -cf "dist/${asset}.zip" -C "target/${{ matrix.target }}/release" bw.exe
+          else
+            tar -czf "dist/${asset}.tar.gz" -C "target/${{ matrix.target }}/release" bw
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          generate_release_notes: true

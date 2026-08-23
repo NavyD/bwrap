@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo fmt --check
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --locked
+
+  # 发布目标之一，保证 windows 平台可编译可测试
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --locked
+
+  # 用声明的 MSRV 真实编译验证（cargo msrv verify 会以 rustup run 1.97 cargo check 执行）
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97
+      - uses: taiki-e/install-action@cargo-msrv
+      - run: cargo msrv verify
+
+  # 公共 API semver 检查：PR 对比 base 分支 tip，push 对比 push 前提交；
+  # 仓库首个 push（before 全零）无基线，跳过
+  semver:
+    runs-on: ubuntu-latest
+    if: github.event.before != '0000000000000000000000000000000000000000'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          baseline-rev: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
