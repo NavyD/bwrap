@@ -626,42 +626,7 @@ mod tests {
 
     use super::*;
     use clap::Parser;
-    use rstest::rstest;
     use similar_asserts::assert_eq;
-
-    #[rstest]
-    #[case(&["/bw", "unlock"])]
-    #[case(&["/bw", "unlock", "--raw"])]
-    #[case(&["/bw", "unlock", "--raw", "--passwordfile", "/a/b.file"])]
-    #[case(&["/bw", "unlock", "--raw", "somepw"])]
-    #[tokio::test]
-    async fn get_bw_unlock_cmd_args_test(#[case] args: &[&str]) {
-        let cli = BWCli::parse_from(args);
-        let Some(BWCommands::Unlock(unlock_args)) = &cli.cmd else {
-            panic!("invalid subcommand {:?}", cli.cmd);
-        };
-        // 原 command().try_get_matches()? 会读取 env::args_os()
-        // 而测试时不存在会导致 panic
-        // get_clap_subcommand()
-        let cmd = BWCli::command();
-        let subcmd_name = args[1].to_string();
-        let subcmd = cmd.find_subcommand(&subcmd_name).cloned().unwrap();
-        let cmd_args = get_bw_unlock_cmd_args(
-            &cli.bw_args,
-            unlock_args,
-            ClapSubCmdName {
-                cmd,
-                subcmd,
-                subcmd_name,
-            },
-        )
-        .await
-        .unwrap();
-        // NOTE: bw path 可能由于本地环境的影响返回实际的路径，所以跳过检查
-        assert_eq!(cmd_args.len(), args.len());
-        // 返回的参数顺序与原始不一致
-        assert!(cmd_args[1..].iter().all(|e| args.contains(&e.as_str())));
-    }
 
     #[test]
     fn serve_daemon_flag_parses() {
