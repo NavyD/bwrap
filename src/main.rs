@@ -430,7 +430,6 @@ async fn spawn_daemon(hostname: &str, port: u16) -> Result<process::Child> {
     };
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::Threading::{
             CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
         };
