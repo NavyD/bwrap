@@ -57,6 +57,9 @@ pub async fn start(args: BWAgentConfig) -> Result<()> {
             // 显式回收 bw serve 子进程，避免依赖 kill_on_drop（被 idle_lock 任务持有的 Arc 架空，
             // 否则子进程需等 idle 任务在 deadline 唤醒后才被 kill，最长残留 idle_lock_timeout）
             let mut lock = shutdown_state.bw_serve_child.lock().await;
+            tracing::debug!(
+                state = ?shutdown_state, "killing bw on shutdowning"
+            );
             if let Some(mut child) = lock.take()
                 && let Err(e) = child.kill().await
             {
@@ -71,6 +74,7 @@ pub async fn start(args: BWAgentConfig) -> Result<()> {
 }
 
 async fn shutdown_handler(State(s): State<AppState>) -> axum::http::StatusCode {
+    tracing::trace!(state = ?s, "shutdowning handler");
     let _ = s.shutdown_tx.send(true);
     axum::http::StatusCode::OK
 }

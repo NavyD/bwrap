@@ -584,6 +584,14 @@ fn daemon_args(hostname: &str, port: u16) -> Vec<String> {
 
 /// 向运行中的 daemon 发送优雅关闭请求
 async fn stop_daemon(hostname: &str, port: u16) -> Result<()> {
+    if !addr_in_use((hostname, port)).await? {
+        trace!(
+            hostname = hostname,
+            port = port,
+            "skip stopping daemon since the address is not available",
+        );
+        return Ok(());
+    }
     let url = format!("http://{}:{}/__bwrap/shutdown", hostname, port);
     trace!(url = url, "sending shutdown request");
     let resp = reqwest::Client::builder()
