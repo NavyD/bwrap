@@ -350,6 +350,7 @@ dependencies = [
  "axum",
  "axum-reverse-proxy",
  "bon",
+ "bwrap",
  "clap",
  "directories",
  "fs4",

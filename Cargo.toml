@@ -8,6 +8,11 @@ rust-version = "1.97"
 name = "bw"
 path = "src/main.rs"
 
+[[bin]]
+name = "mockbw"
+path = "src/bin/mockbw.rs"
+required-features = ["test-bin"]
+
 [dependencies]
 anyhow = "1"
 axum = {
@@ -54,6 +59,8 @@ which = "8.0"
 [dev-dependencies]
 assert_cmd = "2.2"
 bon = "3.9"
+# 仅在 test 启用 mockbw 相关的 bin
+bwrap = { path = ".", default-features = false, features = ["test-bin"] }
 httpmock = "0.8"
 jsonpath-rust = "1.0"
 predicates = "3.1"
@@ -68,6 +75,9 @@ mimalloc = "0.1"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
+
+[features]
+test-bin = []
 
 [profile.release]
 lto = true
