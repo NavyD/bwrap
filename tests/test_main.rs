@@ -192,6 +192,7 @@ struct MockBW {
     #[builder(default = 0)]
     exitcode: u8,
 }
+#[cfg(unix)]
 fn mock_bw_path(bw: MockBW) -> Result<PathBuf> {
     gen_mock_bw()
         .maybe_stdout(bw.stdout)
