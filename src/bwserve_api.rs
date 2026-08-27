@@ -311,6 +311,7 @@ mod test {
         "unix://localhost:18888/tmp/bw-serve.sock",
         "http://localhost:18888"
     )]
+    #[cfg(unix)]
     fn new_api_with_url_test(
         #[case] url: &str,
         #[case] expected: &str,
