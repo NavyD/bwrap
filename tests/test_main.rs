@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -167,6 +168,7 @@ async fn bw_get_item_error_test() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn bw_unlock_when_bw_error_test() {
     let exitcode = 111;
     let bw_path = gen_mock_bw().exitcode(exitcode).call().unwrap();
