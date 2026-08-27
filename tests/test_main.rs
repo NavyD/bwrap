@@ -326,6 +326,7 @@ const BIN_NAME: &str = "bw";
     MockBW::builder().exitcode(121).stderr("unknown-subcmd error").build(),
     &["unknown-subcmd"]
 )]
+#[cfg(unix)]
 fn bw_external_test(#[case] bw: MockBW, #[case] args: &[&str]) {
     let bw_path = mock_bw_path(bw.clone()).unwrap();
     Command::cargo_bin(BIN_NAME)
