@@ -205,6 +205,13 @@ struct BWServeArgs {
     )]
     idle_lock_timeout: Duration,
 
+    #[arg(
+        long,
+        value_parser = humantime::parse_duration,
+        default_value = "2s",
+    )]
+    wait_port_timeout: Duration,
+
     /// 以后台 daemon 方式启动并退出
     #[arg(long)]
     daemon: bool,
@@ -534,7 +541,7 @@ async fn start_bw_serve_daemon(args: &BWServeArgs) -> Result<()> {
     let Err(e) = wait_tcp_port(
         (args.hostname.as_str(), args.port),
         false,
-        Duration::from_secs(2),
+        args.wait_port_timeout,
     )
     .await
     else {
@@ -656,7 +663,7 @@ async fn bw_serve_stop(serve_args: &BWServeArgs) -> Result<()> {
     wait_tcp_port(
         (&*serve_args.hostname, serve_args.port),
         true,
-        Duration::from_secs(2),
+        serve_args.wait_port_timeout,
     )
     .await?;
     Ok(())
@@ -693,7 +700,7 @@ async fn wait_tcp_port(
     timeout: Duration,
 ) -> Result<()> {
     let deadline = std::time::Instant::now() + timeout;
-    let interval = Duration::from_millis(100);
+    let interval = Duration::from_millis(200);
     loop {
         if addr_in_use(&addr).await.map(|used| free_or_ready != used)? {
             return Ok(());
