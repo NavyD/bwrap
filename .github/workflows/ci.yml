@@ -2,7 +2,14 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  # 按引用（分支/PR合并引用）严格串行 ci
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -37,6 +44,7 @@ jobs:
       - run: cargo check --locked
 
   test:
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
