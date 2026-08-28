@@ -29,12 +29,12 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let cli = BWCli::parse();
-    let unknown_code = ExitCode::from(255);
+    let unknown_code: u8 = 255;
     let _log_guards = match init_log(&cli.bw_args.log_file) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("failed to init log by error: {}", e);
-            return unknown_code;
+            return unknown_code.into();
         }
     };
 
@@ -52,17 +52,18 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
 
-    tracing::error!(error = %e, cli = ?cli, "failed to run cmd");
+    error!(error = %e, cli = ?cli, "failed to run cmd");
     // 保证输出和 exitcode 与原 bw 一致
     let (code, emsg) = e
         .downcast::<BWCliError>()
         .map(|cli_err| match cli_err {
             BWCliError::Msg(s) => (1, Some(s)),
-            BWCliError::Follow(exit_status) => {
-                (exit_status.code().unwrap_or(255) as u8, None)
-            }
+            BWCliError::Follow(exit_status) => (
+                exit_status.code().map(|c| c as u8).unwrap_or(unknown_code),
+                None,
+            ),
         })
-        .unwrap_or_else(|e| (255, Some(e.to_string())));
+        .unwrap_or_else(|e| (unknown_code, Some(e.to_string())));
     if let Some(emsg) = emsg {
         write_str(io::stderr(), emsg)
             .await
@@ -497,7 +498,7 @@ async fn spawn_daemon(hostname: &str, port: u16) -> Result<process::Child> {
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
     let child = cmd.spawn()?;
-    tracing::info!(cmd = ?cmd, child = ?child, "spawned agent server");
+    info!(cmd = ?cmd, child = ?child, "spawned agent server");
     Ok(child)
 }
 
@@ -569,7 +570,7 @@ async fn bw_serve(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     if serve_args.restart
         && let Err(e) = bw_serve_stop(serve_args).await
     {
-        tracing::info!(error = %e, "bw serve stopped")
+        info!(error = %e, "bw serve stopped")
     }
 
     let listen_url: url::Url = if serve_args.hostname.starts_with("unix://") {
@@ -614,7 +615,7 @@ async fn addr_in_use(addr: impl ToSocketAddrs + Debug) -> Result<bool> {
             }
         })
         .map_err(Into::into);
-    tracing::trace!(result = ?res, addr = ?addr, "addr in use");
+    trace!(result = ?res, addr = ?addr, "addr in use");
     res
 }
 
@@ -623,7 +624,7 @@ async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
     if serve_args.restart
         && let Err(e) = bw_serve_stop(serve_args).await
     {
-        tracing::info!(
+        info!(
             error = %e, "failed to stopping bw serve when try restart"
         );
     }
