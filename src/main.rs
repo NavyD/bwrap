@@ -591,14 +591,18 @@ async fn bw_serve(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
 async fn find_real_bw(path: impl Into<String>) -> Result<PathBuf> {
     let path = path.into();
     tokio::task::spawn_blocking(move || {
-        // let path = path.into();
         // 检查 bw bin 路径，如果与当前 bwrap bin
         // 重命名的文件路径一致则使用另一个 bw
-        let exe = std::env::current_exe()?;
-        let mut it = which::which_all(&path)?;
-        it.next()
-            .and_then(|p| if p == exe { it.next() } else { Some(p) })
-            .ok_or_else(|| anyhow!("not found bin {}", path))
+        let exe = std::env::current_exe()?.canonicalize()?;
+        which::which_all(&path)?
+            .find(|p| p.canonicalize().as_ref().unwrap_or(p) != &exe)
+            .ok_or_else(|| {
+                anyhow!(
+                    "not found bin {} filter by exe {}",
+                    path,
+                    exe.display()
+                )
+            })
     })
     .await?
 }
