@@ -331,7 +331,7 @@ async fn bw_status(bw_args: &BWArgs) -> Result<()> {
     Ok(())
 }
 
-macro_rules! field {
+macro_rules! field_kv {
     ($obj:ident.$field:ident) => {
         (stringify!($field), $obj.$field)
     };
@@ -351,14 +351,11 @@ fn get_clap_opt(c: &clap::Command, field_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("not found arg with id={}", field_name))
 }
 
-struct ClapSubCmdName {
-    cmd: clap::Command,
-    subcmd: clap::Command,
-    subcmd_name: String,
-}
-/// 原 command().try_get_matches()? 会读取 env::args_os()
-/// 分离避免测试时不存在会导致 panic
-fn get_clap_subcommand() -> Result<ClapSubCmdName> {
+/// 构建 bw unlock 列表参数
+async fn get_bw_unlock_cmd_args(
+    bw_args: &BWArgs,
+    unlock_args: &BWUnlockArgs,
+) -> Result<Vec<String>> {
     let cmd = BWCli::command();
     let subcmd_name = cmd
         .clone()
@@ -366,28 +363,15 @@ fn get_clap_subcommand() -> Result<ClapSubCmdName> {
         .subcommand_name()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("not found subcommand name"))?;
-    cmd.find_subcommand(&subcmd_name)
-        .cloned()
-        .map(|subcmd| ClapSubCmdName {
-            cmd,
-            subcmd,
-            subcmd_name,
-        })
-        .ok_or_else(|| anyhow!("not found subcommand"))
-}
-
-/// 构建 bw unlock 列表参数
-async fn get_bw_unlock_cmd_args(
-    bw_args: &BWArgs,
-    unlock_args: &BWUnlockArgs,
-    clapcmd: ClapSubCmdName,
-) -> Result<Vec<String>> {
+    let subcmd = cmd
+        .find_subcommand(&subcmd_name)
+        .context("not found subcommand")?;
     let mut cmd_args = vec![
         find_real_bw(&bw_args.bw_path)
             .await?
             .to_string_lossy()
             .to_string(),
-        clapcmd.subcmd_name,
+        subcmd_name,
     ];
     if let Some(pw) = unlock_args.password.to_owned() {
         cmd_args.push(pw);
@@ -395,8 +379,8 @@ async fn get_bw_unlock_cmd_args(
 
     let mut extend_args = |(name, val): (&str, &dyn Any)| -> Result<()> {
         // 从子命令或父命令中获取选项
-        let opt_name = get_clap_opt(&clapcmd.subcmd, name)
-            .or_else(|e| get_clap_opt(&clapcmd.cmd, name).context(e))?;
+        let opt_name = get_clap_opt(subcmd, name)
+            .or_else(|e| get_clap_opt(&cmd, name).context(e))?;
         if let Some(v) = val.downcast_ref::<bool>() {
             if *v {
                 cmd_args.push(opt_name);
@@ -413,10 +397,10 @@ async fn get_bw_unlock_cmd_args(
         bail!("Unsupported type of arg={:?}", val);
     };
     // 编译期保证不会出现错误
-    extend_args(field!(&unlock_args.check))?;
-    extend_args(field!(&unlock_args.passwordenv))?;
-    extend_args(field!(&unlock_args.passwordfile))?;
-    extend_args(field!(&bw_args.raw))?;
+    extend_args(field_kv!(&unlock_args.check))?;
+    extend_args(field_kv!(&unlock_args.passwordenv))?;
+    extend_args(field_kv!(&unlock_args.passwordfile))?;
+    extend_args(field_kv!(&bw_args.raw))?;
     Ok(cmd_args)
 }
 
@@ -427,9 +411,7 @@ async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
         bail!("--restart flag required --raw")
     }
 
-    let cmd_args =
-        get_bw_unlock_cmd_args(bw_args, unlock_args, get_clap_subcommand()?)
-            .await?;
+    let cmd_args = get_bw_unlock_cmd_args(bw_args, unlock_args).await?;
     info!(cmd_args = ?cmd_args, "spawning command");
 
     let output = process::Command::new(&cmd_args[0])
@@ -564,8 +546,8 @@ async fn start_bw_serve_daemon(args: &BWServeArgs) -> Result<()> {
     }
     Err(match child.try_wait() {
         Ok(Some(s)) => e.context(format!(
-            "daemon exited status={}, stderr={:?}, stdout={:?}",
-            s, stderr_str, stdout_str
+            "daemon exited status={}, stdout={:?}, stderr={:?}",
+            s, stdout_str, stderr_str
         )),
         Err(e1) => e.context(e1),
         Ok(None) => e,
