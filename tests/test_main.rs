@@ -47,7 +47,7 @@ where
         })
         .await;
 
-    let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
+    let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
     cmd.args(["--api-url", &server.url("/")])
         .args(args.iter().map(AsRef::as_ref));
     (cmd, server)
@@ -173,7 +173,7 @@ async fn bw_unlock_when_bw_error_test() {
     let exitcode = 111;
     let bw_path = gen_mock_bw().exitcode(exitcode).call().unwrap();
     let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
-    let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
+    let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
     cmd.args(args)
         .output()
         .unwrap()
@@ -272,7 +272,7 @@ async fn bw_unlock_stop_daemon_test() {
         })
         .await;
 
-    let mut cmd = Command::cargo_bin("bw").expect("not found cargo bin");
+    let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
     cmd.args(args)
         .output()
         .unwrap()
@@ -317,7 +317,8 @@ fn bw_unlock_restart_test() {
     assert!(res.is_ok(), "result is error: {:?}", res);
 }
 
-const BIN_NAME: &str = "bw";
+// 获取 bin 文件名，使用 pkg 名作为默认 src/main.rs 构建 bin 名
+const BIN_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[rstest]
 #[case(MockBW::builder().build(), &["sync"])]

@@ -5,10 +5,6 @@ edition = "2024"
 rust-version = "1.97"
 
 [[bin]]
-name = "bw"
-path = "src/main.rs"
-
-[[bin]]
 name = "mockbw"
 path = "src/bin/mockbw.rs"
 required-features = ["test-bin"]
