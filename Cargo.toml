@@ -3,6 +3,7 @@ name = "bwrap"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
+repository = "https://github.com/NavyD/bwrap"
 
 [[bin]]
 name = "mockbw"
@@ -77,3 +78,8 @@ test-bin = []
 
 [profile.release]
 lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

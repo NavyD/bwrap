@@ -1,0 +1,44 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# Generate and dist a source tarball
+source-tarball = false
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = []
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+
+# https://axodotdev.github.io/cargo-dist/book/ci/customizing.html#cross-compilation
+[dist.github-custom-runners.x86_64-unknown-linux-musl]
+runner = "ubuntu-latest"
+
+[dist.github-custom-runners.aarch64-unknown-linux-musl]
+runner = "ubuntu-latest"
+
+[dist.github-custom-runners.x86_64-pc-windows-msvc]
+# runner = "ubuntu-latest"
+# 包含依赖如 cargo-xwin 等其它
+container = "messense/cargo-xwin"
+
+# [dist.github-custom-runners.aarch64-pc-windows-msvc]
+# container = "messense/cargo-xwin"
+
+[dist.min-glibc-version]
+"*" = "2.17"
+
+# https://axodotdev.github.io/cargo-dist/book/reference/config.html#binaries
+[dist.binaries]
+# 排除 mockbw
+x86_64-unknown-linux-musl = ["bwrap"]
+aarch64-unknown-linux-musl = ["bwrap"]
+x86_64-pc-windows-msvc = ["bwrap"]
+# 本机构建时不包含
+x86_64-unknown-linux-gnu = ["bwrap"]
+# aarch64-apple-darwin = ["bwrap"]
+# aarch64-unknown-linux-gnu = ["bwrap"]
