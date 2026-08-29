@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use assert_cmd::{Command, assert::OutputAssertExt};
 use bwrap::bwserve_api::{
-    BWServeGetRespData, BWServeResp, BWServeStatusRespData,
+    BWServeGetRespData, BWServeResp, BWServeStatusRespData, VaultItem,
 };
 use httpmock::Method::POST;
 use httpmock::{Method::GET, MockServer};
@@ -51,6 +51,29 @@ where
     cmd.args(["--api-url", &server.url("/")])
         .args(args.iter().map(AsRef::as_ref));
     (cmd, server)
+}
+
+#[fixture]
+fn item_gh_sshkey() -> Value {
+    json!({
+      "type": 5,
+      "name": "github",
+      "favorite": false,
+      "reprompt": 0,
+      "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "collectionIds": [],
+      "object": "item",
+      "fields": [],
+      "sshKey": {
+        "privateKey": r#"-----BEGIN OPENSSH PRIVATE KEY-----\nxxx\nxxx\nxxx\nxxx\nxxx\n-----END OPENSSH PRIVATE KEY-----\n"#,
+        "publicKey": "ssh-ed25519 xxx",
+        "keyFingerprint": "SHA256:xxx"
+      },
+      "passwordHistory": [],
+      "creationDate": "2024-12-26T09:15:13.395Z",
+      "revisionDate": "2024-12-26T09:15:13.396Z",
+      "attachments": []
+    })
 }
 
 #[fixture]
@@ -120,18 +143,25 @@ async fn bw_status_stdout_test(
         ));
 }
 
-#[rstest]
 #[tokio::test]
-async fn bw_get_item_stdout_test(item_gh: Value) {
+#[rstest]
+#[case(item_gh(), &[
+    "$['name','id','object','folderId','fields']",
+    "$.login['username', 'password', 'totp']",
+])]
+#[case(item_gh_sshkey(), &["$.sshKey.*"])]
+async fn bw_get_item_stdout_test(
+    #[case] item_val: Value,
+    #[case] jsonpaths: &[&str],
+) {
+    let item: VaultItem = json_dec_value(item_val.clone()).unwrap();
     let body = json_enc(&BWServeResp {
         success: true,
         message: None,
-        data: Some(BWServeGetRespData::Item(Box::new(
-            json_dec_value(item_gh.clone()).unwrap(),
-        ))),
+        data: Some(BWServeGetRespData::Item(Box::new(item.clone()))),
     })
     .unwrap();
-    let (mut cmd, _server) = bwcmd(["get", "item", "github.com"], body).await;
+    let (mut cmd, _server) = bwcmd(["get", "item", &item.name], body).await;
     let out = cmd.output().unwrap();
     let stdout_str = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
@@ -139,12 +169,8 @@ async fn bw_get_item_stdout_test(item_gh: Value) {
         .success()
         .stdout(predicate::str::is_empty().trim().not());
     let out_json_val: Value = json_dec(&stdout_str).expect(&stderr_str);
-    let jsonpaths = [
-        "$['name','id','object','folderId','fields']",
-        "$.login['username', 'password', 'totp']",
-    ];
     for jp in jsonpaths {
-        assert_eq!(out_json_val.query(jp), item_gh.query(jp));
+        assert_eq!(out_json_val.query(jp), item_val.query(jp));
     }
 }
 

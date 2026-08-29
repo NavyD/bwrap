@@ -39,6 +39,14 @@ pub struct VaultItemLogin {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VaultItemSshKey {
+    private_key: String,
+    public_key: String,
+    key_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VaultItem {
     // 原 "type" 字段重命名
     #[serde(rename = "type")]
@@ -54,6 +62,7 @@ pub struct VaultItem {
     pub folder_id: Option<String>,
     pub fields: Vec<VaultItemField>,
     pub login: Option<VaultItemLogin>,
+    pub ssh_key: Option<VaultItemSshKey>,
     // passwordHistory 和 attachments 在 Python 中为 list[Any]，这里用 Vec<Value> 表示任意 JSON 数组
     // pub password_history: Vec<Value>,
     pub creation_date: String,
