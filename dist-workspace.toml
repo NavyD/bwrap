@@ -22,9 +22,9 @@ runner = "ubuntu-latest"
 runner = "ubuntu-latest"
 
 [dist.github-custom-runners.x86_64-pc-windows-msvc]
-runner = "ubuntu-latest"
+# runner = "ubuntu-latest"
 # 包含依赖如 cargo-xwin 等其它
-# container = "messense/cargo-xwin"
+container = "messense/cargo-xwin"
 
 # [dist.github-custom-runners.aarch64-pc-windows-msvc]
 # container = "messense/cargo-xwin"
