@@ -10,17 +10,10 @@ name = "mockbw"
 path = "src/bin/mockbw.rs"
 required-features = ["test-bin"]
 
+# NOTE: 避免使用 toml 1.1 语法导致 `cargo metadata` 等工具的兼容问题
 [dependencies]
 anyhow = "1"
-axum = {
-  version = "0.8",
-  default-features = false,
-  features = [
-    "http1",
-    "macros",
-    "tokio",
-  ]
-}
+axum = { version = "0.8", default-features = false, features = ["http1", "macros", "tokio"] }
 axum-reverse-proxy = "1"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "6.0"
@@ -36,17 +29,7 @@ serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2.0"
-tokio = {
-  version = "1",
-  features = [
-    "fs",
-    "io-std",
-    "macros",
-    "process",
-    "rt-multi-thread",
-    "time",
-  ]
-}
+tokio = { version = "1", features = ["fs", "io-std", "macros", "process", "rt-multi-thread", "time"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
