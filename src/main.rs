@@ -13,7 +13,8 @@ use bwrap::bwserve_api::{BWGetArgs, BwListArgs};
 use bwrap::{agent_server, bwserve_api};
 use clap::{CommandFactory, Parser, Subcommand};
 use directories::ProjectDirs;
-use sonic_rs::to_string as ser_to_json;
+use serde::{Deserialize, Serialize};
+use sonic_rs::{from_str as json_dec, to_string as ser_to_json};
 use tokio::fs::{self};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, ToSocketAddrs};
@@ -28,8 +29,26 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let cli = BWCli::parse();
+    let mut cli = BWCli::parse();
     let unknown_code: u8 = 255;
+
+    let (bw_args, cfg_serve_args) = if let Some(c) = &cli.bw_args.daemon_cfg {
+        match json_dec::<BWDaemonCfg>(c) {
+            Ok(d) => (d.0, Some(d.1)),
+            Err(e) => {
+                eprintln!(
+                    "failed to parsing json {} by error: {}",
+                    std::any::type_name::<BWDaemonCfg>(),
+                    e
+                );
+                return unknown_code.into();
+            }
+        }
+    } else {
+        (cli.bw_args, None)
+    };
+    cli.bw_args = bw_args;
+
     let _log_guards = match init_log(&cli.bw_args.log_file) {
         Ok(g) => g,
         Err(e) => {
@@ -43,7 +62,13 @@ async fn main() -> ExitCode {
         Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await,
         Some(List(args)) => bw_list(&cli.bw_args, args).await,
         Some(Status) => bw_status(&cli.bw_args).await,
-        Some(Serve(serve_args)) => bw_serve(&cli.bw_args, serve_args).await,
+        Some(Serve(serve_args)) => {
+            bw_serve(
+                &cli.bw_args,
+                cfg_serve_args.as_ref().unwrap_or(serve_args),
+            )
+            .await
+        }
         Some(Unlock(unlock_args)) => bw_unlock(&cli.bw_args, unlock_args).await,
         Some(External(sub_args)) => bw_external(&cli.bw_args, sub_args).await,
         None => Ok(()),
@@ -151,7 +176,7 @@ struct BWCli {
     cmd: Option<BWCommands>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 enum BWLogFile {
     Stdout,
     Stderr,
@@ -171,7 +196,7 @@ impl FromStr for BWLogFile {
     }
 }
 
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Deserialize, Serialize)]
 struct BWArgs {
     #[arg(long, global = true)]
     session: Option<String>,
@@ -190,9 +215,12 @@ struct BWArgs {
 
     #[arg(long, global = true, default_value = "stderr")]
     log_file: Vec<BWLogFile>,
+    /// 用于 spawn daemon 使用重置选项，方便维护通用选项
+    #[arg(long, global = true, hide = true)]
+    daemon_cfg: Option<String>,
 }
 
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Deserialize, Serialize)]
 struct BWServeArgs {
     #[arg(long, default_value = "localhost")]
     hostname: String,
@@ -204,6 +232,7 @@ struct BWServeArgs {
         value_parser = humantime::parse_duration,
         default_value = "10m",
     )]
+    #[serde(with = "humantime_serde")]
     idle_lock_timeout: Duration,
 
     #[arg(
@@ -211,6 +240,7 @@ struct BWServeArgs {
         value_parser = humantime::parse_duration,
         default_value = "2s",
     )]
+    #[serde(with = "humantime_serde")]
     wait_port_timeout: Duration,
 
     /// 以后台 daemon 方式启动并退出
@@ -458,35 +488,53 @@ static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
         .expect("not found project dirs")
 });
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+struct BWDaemonCfg(BWArgs, BWServeArgs);
+
 /// 以当前可执行文件拉起后台 daemon（`bwrap serve --hostname --port`）
-async fn spawn_daemon(args: &BWServeArgs) -> Result<process::Child> {
+async fn spawn_daemon(
+    bw_args: &BWArgs,
+    serve_args: &BWServeArgs,
+) -> Result<process::Child> {
     let log_path = PROJECT_DIRS.cache_dir().join("bw-serve-daemon.log");
     if let Some(pp) = log_path.parent() {
         fs::create_dir_all(pp).await?
     }
 
+    let mut bw_args = bw_args.clone();
+    bw_args.log_file = vec![BWLogFile::File(log_path)];
+    bw_args.daemon_cfg = None;
+    let mut serve_args = serve_args.clone();
+    serve_args.daemon = false;
+    serve_args.restart = false;
+    serve_args.stop = false;
+    let daemon_cfg = ser_to_json(&BWDaemonCfg(bw_args, serve_args))?;
+
     let exe = std::env::current_exe()?;
     let mut cmd = process::Command::new(exe);
-    cmd.args([
-        "serve",
-        "--hostname",
-        &args.hostname,
-        "--wait-port-timeout",
-        &humantime::format_duration(args.wait_port_timeout).to_string(),
-        "--idle-lock-timeout",
-        &humantime::format_duration(args.idle_lock_timeout).to_string(),
-        "--port",
-        &args.port.to_string(),
-        "--log-file",
-        "stderr",
-        "--log-file",
-        log_path
-            .to_str()
-            .ok_or_else(|| anyhow!("{:?} to str error", log_path))?,
-    ])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .stdin(Stdio::null());
+    cmd.args(["serve", "--daemon-cfg", &daemon_cfg])
+        // cmd.args([
+        //     "--bw-path",
+        //     &bw_args.bw_path,
+        //     "serve",
+        //     "--hostname",
+        //     &serve_args.hostname,
+        //     "--wait-port-timeout",
+        //     &humantime::format_duration(serve_args.wait_port_timeout).to_string(),
+        //     "--idle-lock-timeout",
+        //     &humantime::format_duration(serve_args.idle_lock_timeout).to_string(),
+        //     "--port",
+        //     &serve_args.port.to_string(),
+        //     "--log-file",
+        //     "stderr",
+        //     "--log-file",
+        //     log_path
+        //         .to_str()
+        //         .ok_or_else(|| anyhow!("{:?} to str error", log_path))?,
+        // ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
 
     #[cfg(unix)]
     unsafe {
@@ -522,13 +570,16 @@ async fn get_api_url(bw_args: &BWArgs) -> Result<String> {
     Ok(url)
 }
 
-async fn start_bw_serve_daemon(args: &BWServeArgs) -> Result<()> {
-    let mut child = spawn_daemon(args).await?;
+async fn start_bw_serve_daemon(
+    bw_args: &BWArgs,
+    serve_args: &BWServeArgs,
+) -> Result<()> {
+    let mut child = spawn_daemon(bw_args, serve_args).await?;
 
     let Err(e) = wait_tcp_port(
-        (args.hostname.as_str(), args.port),
+        (serve_args.hostname.as_str(), serve_args.port),
         false,
-        args.wait_port_timeout,
+        serve_args.wait_port_timeout,
     )
     .await
     else {
@@ -568,7 +619,7 @@ async fn bw_serve(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
         .map_err(|e| anyhow!("{} {} for to unlock", BW_SESSION_NAME, e))?;
 
     if serve_args.daemon {
-        return bw_serve_daemon(serve_args).await;
+        return bw_serve_daemon(bw_args, serve_args).await;
     }
 
     if serve_args.restart
@@ -628,7 +679,10 @@ async fn addr_in_use(addr: impl ToSocketAddrs + Debug) -> Result<bool> {
 }
 
 /// --daemon：端口空闲则后台拉起，否则报错
-async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
+async fn bw_serve_daemon(
+    bw_args: &BWArgs,
+    serve_args: &BWServeArgs,
+) -> Result<()> {
     if serve_args.restart
         && let Err(e) = bw_serve_stop(serve_args).await
     {
@@ -644,7 +698,7 @@ async fn bw_serve_daemon(serve_args: &BWServeArgs) -> Result<()> {
             serve_args.port
         )
     }
-    start_bw_serve_daemon(serve_args).await?;
+    start_bw_serve_daemon(bw_args, serve_args).await?;
     Ok(())
 }
 

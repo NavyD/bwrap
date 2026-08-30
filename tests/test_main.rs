@@ -395,6 +395,7 @@ fn bw_serve_daemon_timeout_test() {
 
     Command::cargo_bin(BIN_NAME)
         .unwrap()
+        .args(["--bw-path", bw_path.to_str().unwrap()])
         .args(["serve", "--stop", "--port", &port])
         .output()
         .unwrap()

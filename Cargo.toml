@@ -20,6 +20,7 @@ directories = "6.0"
 fs4 = { version = "1", features = ["tokio"] }
 heck = "0.5"
 humantime = "2.4"
+humantime-serde = "1.1"
 hyper = "1"
 hyper-util = "0.1"
 reqwest = { version = "0.13", features = [] }
@@ -33,7 +34,7 @@ tokio = { version = "1", features = ["fs", "io-std", "macros", "process", "rt-mu
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-url = "2"
+url = { version = "2", features = ["serde"] }
 which = "8.0"
 
 [dev-dependencies]
