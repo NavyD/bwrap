@@ -44,13 +44,16 @@ pub async fn start(args: BWAgentConfig) -> Result<()> {
         bw_serve_url: Arc::new(bw_serve_url),
         shutdown_tx,
     };
-    let shutdown_state = state.clone();
+    let mut shutdown_state = state.clone();
     let app = build_router(state).await?;
 
     let addr =
         listen_url.socket_addrs(|| listen_url.port_or_known_default())?;
     tracing::info!(addr = ?addr, "tcp serving");
     let listener = net::TcpListener::bind(&*addr).await?;
+
+    idle_shutdown(&mut shutdown_state).await;
+
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             let _ = shutdown_rx.changed().await;
@@ -198,7 +201,11 @@ async fn idle_shutdown(s: &mut AppState) {
     tokio::spawn(async move {
         let mut deadline = *rx.borrow();
         loop {
-            tracing::trace!(deadline = ?deadline, "idle sleepping");
+            tracing::trace!(
+                interval = ?s.args.idle_lock_timeout,
+                until = ?deadline,
+                "idle sleepping",
+            );
             tokio::select! {
                 _ = time::sleep_until(deadline) => {
                     tracing::debug!("idle task completed");

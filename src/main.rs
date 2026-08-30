@@ -459,7 +459,7 @@ static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
 });
 
 /// 以当前可执行文件拉起后台 daemon（`bwrap serve --hostname --port`）
-async fn spawn_daemon(hostname: &str, port: u16) -> Result<process::Child> {
+async fn spawn_daemon(args: &BWServeArgs) -> Result<process::Child> {
     let log_path = PROJECT_DIRS.cache_dir().join("bw-serve-daemon.log");
     if let Some(pp) = log_path.parent() {
         fs::create_dir_all(pp).await?
@@ -470,9 +470,13 @@ async fn spawn_daemon(hostname: &str, port: u16) -> Result<process::Child> {
     cmd.args([
         "serve",
         "--hostname",
-        hostname,
+        &args.hostname,
+        "--wait-port-timeout",
+        &humantime::format_duration(args.wait_port_timeout).to_string(),
+        "--idle-lock-timeout",
+        &humantime::format_duration(args.idle_lock_timeout).to_string(),
         "--port",
-        &port.to_string(),
+        &args.port.to_string(),
         "--log-file",
         "stderr",
         "--log-file",
@@ -519,7 +523,7 @@ async fn get_api_url(bw_args: &BWArgs) -> Result<String> {
 }
 
 async fn start_bw_serve_daemon(args: &BWServeArgs) -> Result<()> {
-    let mut child = spawn_daemon(&args.hostname, args.port).await?;
+    let mut child = spawn_daemon(args).await?;
 
     let Err(e) = wait_tcp_port(
         (args.hostname.as_str(), args.port),
@@ -659,12 +663,10 @@ async fn bw_serve_stop(serve_args: &BWServeArgs) -> Result<()> {
 /// 向运行中的 daemon 发送优雅关闭请求
 async fn stop_daemon(hostname: &str, port: u16) -> Result<()> {
     if !addr_in_use((hostname, port)).await? {
-        trace!(
-            hostname = hostname,
-            port = port,
-            "skip stopping daemon since the address is not available",
-        );
-        return Ok(());
+        bail!(
+            "failed to stopping daemon unavailable addr={:?}",
+            (hostname, port)
+        )
     }
     let url = format!("http://{}:{}/__bwrap/shutdown", hostname, port);
     trace!(url = url, "sending shutdown request");

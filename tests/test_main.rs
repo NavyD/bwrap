@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use assert_cmd::{Command, assert::OutputAssertExt};
@@ -367,4 +367,38 @@ fn bw_external_test(#[case] bw: MockBW, #[case] args: &[&str]) {
         .code(predicate::eq(bw.exitcode as i32))
         .stderr(predicate::str::diff(bw.stderr.unwrap_or("".to_string())))
         .stdout(predicate::str::diff(bw.stdout.unwrap_or("".to_string())));
+}
+
+#[test]
+fn bw_serve_daemon_timeout_test() {
+    let port = 18087.to_string();
+    let timeout = Duration::from_millis(800);
+    let bw_path = mock_bw_path(MockBW::builder().build()).unwrap();
+    Command::cargo_bin(BIN_NAME)
+        .unwrap()
+        .env("BW_SESSION", "xx")
+        .args(["--bw-path", bw_path.to_str().unwrap()])
+        .args([
+            "serve",
+            "--port",
+            &port,
+            "--daemon",
+            "--idle-lock-timeout",
+            &humantime::format_duration(timeout).to_string(),
+        ])
+        .output()
+        .unwrap()
+        .assert()
+        .success();
+
+    std::thread::sleep(timeout + Duration::from_millis(300));
+
+    Command::cargo_bin(BIN_NAME)
+        .unwrap()
+        .args(["serve", "--stop", "--port", &port])
+        .output()
+        .unwrap()
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(port));
 }
