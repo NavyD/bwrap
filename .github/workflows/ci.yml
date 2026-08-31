@@ -1,10 +1,14 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
+    paths-ignore:
+      - .github/**
+      - docs/**
+      - "*.md"
+      - dist-workspace.toml
+      - .editorconfig
+      - .cz.toml
 
 concurrency:
   # 按引用（分支/PR合并引用）严格串行 ci
