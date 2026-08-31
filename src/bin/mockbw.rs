@@ -10,17 +10,17 @@ use std::{
 /// Execute a command with optional stdout/stderr redirection
 #[derive(Parser)]
 struct Cli {
-    #[arg(long, short = 'o')]
+    #[arg(long, short = 'o', env = "MOCKBW_STDOUT")]
     stdout: Option<String>,
-    #[arg(long, short = 'O')]
+    #[arg(long, short = 'O', env = "MOCKBW_STDOUT_FILE")]
     stdout_file: Option<PathBuf>,
 
-    #[arg(long, short = 'e')]
+    #[arg(long, short = 'e', env = "MOCKBW_STDERR")]
     stderr: Option<String>,
-    #[arg(long, short = 'E')]
+    #[arg(long, short = 'E', env = "MOCKBW_STDERR_FILE")]
     stderr_file: Option<PathBuf>,
 
-    #[arg(long, short = 'c', default_value_t = 0)]
+    #[arg(long, short = 'c', default_value_t = 0, env = "MOCKBW_EXITCODE")]
     exitcode: u8,
 
     /// Arguments for the command (captures all remaining arguments)

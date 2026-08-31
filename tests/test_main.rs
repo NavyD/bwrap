@@ -1,13 +1,8 @@
 use std::fmt::Debug;
 use std::fs;
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
 use assert_cmd::{Command, assert::OutputAssertExt};
 use bwrap::bwserve_api::{
     BWServeGetRespData, BWServeResp, BWServeStatusRespData, VaultItem,
@@ -194,21 +189,18 @@ async fn bw_get_item_error_test() {
 }
 
 #[tokio::test]
-#[cfg(unix)]
 async fn bw_unlock_when_bw_error_test() {
-    let exitcode = 111;
-    let bw_path = gen_mock_bw().exitcode(exitcode).call().unwrap();
-    let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
-    let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
-    cmd.args(args)
-        .output()
-        .unwrap()
-        .assert()
-        .code(predicate::eq(exitcode as i32));
+    MockBW::builder().exitcode(111).build().run(|bw, bw_path| {
+        let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
+        let mut cmd =
+            Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
+        cmd.args(args)
+            .output()
+            .unwrap()
+            .assert()
+            .code(predicate::eq(bw.exitcode as i32));
+    });
 }
-
-static TMPDIR: LazyLock<tempfile::TempDir> =
-    LazyLock::new(|| tempfile::Builder::new().prefix("bw-").tempdir().unwrap());
 
 #[derive(Clone, bon::Builder)]
 #[builder(on(String, into))]
@@ -218,130 +210,111 @@ struct MockBW {
     #[builder(default = 0)]
     exitcode: u8,
 }
-#[cfg(unix)]
-fn mock_bw_path(bw: MockBW) -> Result<PathBuf> {
-    gen_mock_bw()
-        .maybe_stdout(bw.stdout)
-        .maybe_stderr(bw.stderr)
-        .exitcode(bw.exitcode)
-        .call()
-}
+impl MockBW {
+    fn run<F, R>(self, f: F) -> R
+    where
+        F: FnOnce(Self, PathBuf) -> R,
+    {
+        let mut args = vec![];
+        let stdout_path = tempfile::Builder::new()
+            .prefix("bw-")
+            .suffix(".stdout")
+            .tempfile()
+            .unwrap();
+        if let Some(s) = &self.stdout {
+            fs::write(&stdout_path, s).unwrap();
+            args.push((
+                "MOCKBW_STDOUT_FILE",
+                stdout_path.path().to_str().unwrap(),
+            ));
+        }
+        let stderr_path = tempfile::Builder::new()
+            .prefix("bw-")
+            .suffix(".stderr")
+            .tempfile()
+            .unwrap();
+        if let Some(s) = &self.stderr {
+            fs::write(&stderr_path, s).unwrap();
+            args.push((
+                "MOCKBW_STDERR_FILE",
+                stderr_path.path().to_str().unwrap(),
+            ));
+        }
+        let exitcode = self.exitcode.to_string();
+        args.push(("MOCKBW_EXITCODE", &exitcode));
 
-#[bon::builder]
-#[builder(on(String, into))]
-#[cfg(unix)]
-fn gen_mock_bw(
-    stdout: Option<String>,
-    stderr: Option<String>,
-    exitcode: Option<u8>,
-) -> Result<PathBuf> {
-    let id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string();
-    let bw_path = TMPDIR.path().join(format!("bw-{}.sh", id));
-    let mut bw_sh_file = fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .mode(0o755)
-        .open(&bw_path)?;
-    let stdout_path = bw_path.with_added_extension("stdout");
-    let stderr_path = bw_path.with_added_extension("stderr");
-    let mut args = vec![];
-    if let Some(s) = stdout {
-        fs::write(&stdout_path, &s)?;
-        args.extend_from_slice(&[
-            "--stdout-file",
-            stdout_path.to_str().with_context(|| s)?,
-        ]);
-    }
-    if let Some(s) = stderr {
-        fs::write(&stderr_path, &s)?;
-        args.extend_from_slice(&[
-            "--stderr-file",
-            stderr_path.to_str().with_context(|| s)?,
-        ]);
-    }
-    let exitcode = exitcode.unwrap_or(0).to_string();
-    args.extend_from_slice(&["--exitcode", &exitcode]);
-
-    writeln!(
-        bw_sh_file,
-        r#"#!/usr/bin/sh
-exec "{}" {} -- "$@"
-"#,
-        env!("CARGO_BIN_EXE_mockbw"),
-        args.join(" ")
-    )?;
-
-    // 避免出现 zsh: text file busy: /tmp/bw-j16A3i.mock.sh/bw.sh
-    drop(bw_sh_file);
-    Ok(bw_path)
-}
-
-#[tokio::test]
-#[cfg(unix)]
-async fn bw_unlock_stop_daemon_test() {
-    let stdout = "bw-session-xx";
-    let bw_path = gen_mock_bw().stdout(stdout).call().unwrap();
-    // println!("bw_path={:?}", bw_path);
-    // sleep(Duration::from_secs(30)).await;
-
-    let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
-    let server = MockServer::start_async().await;
-    server
-        .mock_async(|when, then| {
-            when.method(POST).path("/__bwrap/shutdown");
-            then.status(200);
+        let args = args
+            .into_iter()
+            .map(|v| (v.0, Some(v.1)))
+            .collect::<Vec<_>>();
+        temp_env::with_vars(args, || {
+            f(self, env!("CARGO_BIN_EXE_mockbw").into())
         })
-        .await;
+    }
+}
 
-    let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
-    cmd.args(args)
-        .output()
-        .unwrap()
-        .assert()
-        .success()
-        .stdout(predicate::str::diff(stdout));
+#[test]
+fn bw_unlock_stop_daemon_test() {
+    let stdout = "bw-session-xx";
+    MockBW::builder().stdout(stdout).build().run(|_, bw_path| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
+            let server = MockServer::start_async().await;
+            server
+                .mock_async(|when, then| {
+                    when.method(POST).path("/__bwrap/shutdown");
+                    then.status(200);
+                })
+                .await;
+
+            let mut cmd =
+                Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
+            cmd.args(args)
+                .output()
+                .unwrap()
+                .assert()
+                .success()
+                .stdout(predicate::str::diff(stdout));
+        });
+    });
 }
 
 const ENV_RUST_LOG: &str = "error,bwrap=trace,bw=trace";
 
 #[rstest]
 #[timeout(Duration::from_secs(8))]
-#[cfg(unix)]
 fn bw_unlock_restart_test() {
     let stdout = "bw-session-xx";
-    let bw_path = gen_mock_bw().stdout(stdout).call().unwrap();
-
-    let args = vec![
-        "unlock",
-        "--raw",
-        "--restart",
-        "--bw-path",
-        bw_path.to_str().unwrap(),
-    ];
-    let res = std::panic::catch_unwind(|| {
+    MockBW::builder().stdout(stdout).build().run(|_, bw_path| {
+        let args = vec![
+            "unlock",
+            "--raw",
+            "--restart",
+            "--bw-path",
+            bw_path.to_str().unwrap(),
+        ];
+        let res = std::panic::catch_unwind(|| {
+            Command::cargo_bin(BIN_NAME)
+                .unwrap()
+                .args(args)
+                .env("RUST_LOG", ENV_RUST_LOG)
+                .output()
+                .unwrap()
+                .assert()
+                .success()
+                .stdout(predicate::str::diff(stdout).trim());
+        });
         Command::cargo_bin(BIN_NAME)
             .unwrap()
-            .args(args)
             .env("RUST_LOG", ENV_RUST_LOG)
+            .args(["serve", "--stop"])
             .output()
             .unwrap()
             .assert()
-            .success()
-            .stdout(predicate::str::diff(stdout).trim());
+            .success();
+        assert!(res.is_ok(), "result is error: {:?}", res);
     });
-    Command::cargo_bin(BIN_NAME)
-        .unwrap()
-        .args(["serve", "--stop"])
-        .output()
-        .unwrap()
-        .assert()
-        .success();
-    assert!(res.is_ok(), "result is error: {:?}", res);
 }
 
 // 获取 bin 文件名，使用 pkg 名作为默认 src/main.rs 构建 bin 名
@@ -351,29 +324,28 @@ const BIN_NAME: &str = env!("CARGO_PKG_NAME");
 #[case(MockBW::builder().build(), &["sync"])]
 #[case(MockBW::builder().stdout("Your vault is locked.").build(), &["lock"])]
 #[case(
-    MockBW::builder().exitcode(121).stderr("unknown-subcmd error").build(),
-    &["unknown-subcmd"]
-)]
-#[cfg(unix)]
+     MockBW::builder().exitcode(121).stderr("unknown-subcmd error").build(),
+     &["unknown-subcmd"]
+ )]
 fn bw_external_test(#[case] bw: MockBW, #[case] args: &[&str]) {
-    let bw_path = mock_bw_path(bw.clone()).unwrap();
-    Command::cargo_bin(BIN_NAME)
-        .unwrap()
-        .env("RUST_LOG", "off")
-        .args(["--bw-path", bw_path.to_str().unwrap()])
-        .args(args)
-        .output()
-        .unwrap()
-        .assert()
-        .code(predicate::eq(bw.exitcode as i32))
-        .stderr(predicate::str::diff(bw.stderr.unwrap_or("".to_string())))
-        .stdout(predicate::str::diff(bw.stdout.unwrap_or("".to_string())));
+    bw.run(|bw, bw_path| {
+        Command::cargo_bin(BIN_NAME)
+            .unwrap()
+            .env("RUST_LOG", "off")
+            .args(["--bw-path", bw_path.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap()
+            .assert()
+            .code(predicate::eq(bw.exitcode as i32))
+            .stderr(predicate::str::diff(bw.stderr.unwrap_or("".to_string())))
+            .stdout(predicate::str::diff(bw.stdout.unwrap_or("".to_string())));
+    });
 }
 
 #[rstest]
 // NOTE: 由于默认的超时至少2s，必须高点
 #[timeout(Duration::from_secs(10))]
-#[cfg(unix)]
 fn bw_serve_daemon_timeout_test() {
     use std::net::TcpListener;
 
@@ -384,38 +356,39 @@ fn bw_serve_daemon_timeout_test() {
 
     let port = addr.port().to_string();
 
-    let timeout = Duration::from_millis(800);
-    let bw_path = mock_bw_path(MockBW::builder().build()).unwrap();
-    Command::cargo_bin(BIN_NAME)
-        .unwrap()
-        .env("BW_SESSION", "xx")
-        .env("RUST_LOG", ENV_RUST_LOG)
-        .args(["--bw-path", bw_path.to_str().unwrap()])
-        .args([
-            "serve",
-            "--hostname",
-            hostname,
-            "--port",
-            &port,
-            "--daemon",
-            "--idle-lock-timeout",
-            &humantime::format_duration(timeout).to_string(),
-        ])
-        .output()
-        .unwrap()
-        .assert()
-        .success();
+    MockBW::builder().build().run(|_, bw_path| {
+        let timeout = Duration::from_millis(800);
+        Command::cargo_bin(BIN_NAME)
+            .unwrap()
+            .env("BW_SESSION", "xx")
+            .env("RUST_LOG", ENV_RUST_LOG)
+            .args(["--bw-path", bw_path.to_str().unwrap()])
+            .args([
+                "serve",
+                "--hostname",
+                hostname,
+                "--port",
+                &port,
+                "--daemon",
+                "--idle-lock-timeout",
+                &humantime::format_duration(timeout).to_string(),
+            ])
+            .output()
+            .unwrap()
+            .assert()
+            .success();
 
-    std::thread::sleep(timeout + Duration::from_millis(300));
+        std::thread::sleep(timeout + Duration::from_millis(300));
 
-    Command::cargo_bin(BIN_NAME)
-        .unwrap()
-        .env("RUST_LOG", ENV_RUST_LOG)
-        .args(["--bw-path", bw_path.to_str().unwrap()])
-        .args(["serve", "--stop", "--hostname", hostname, "--port", &port])
-        .output()
-        .unwrap()
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(port));
+        Command::cargo_bin(BIN_NAME)
+            .unwrap()
+            .env("RUST_LOG", ENV_RUST_LOG)
+            .args(["--bw-path", bw_path.to_str().unwrap()])
+            .args(["serve", "--stop", "--hostname", hostname, "--port", &port])
+            .output()
+            .unwrap()
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(port));
+    });
 }
