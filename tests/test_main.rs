@@ -284,6 +284,7 @@ const ENV_RUST_LOG: &str = "error,bwrap=trace,bw=trace";
 
 #[rstest]
 #[timeout(Duration::from_secs(8))]
+#[cfg(unix)]
 fn bw_unlock_restart_test() {
     let stdout = "bw-session-xx";
     MockBW::builder().stdout(stdout).build().run(|_, bw_path| {
@@ -346,6 +347,7 @@ fn bw_external_test(#[case] bw: MockBW, #[case] args: &[&str]) {
 #[rstest]
 // NOTE: 由于默认的超时至少2s，必须高点
 #[timeout(Duration::from_secs(10))]
+#[cfg(unix)]
 fn bw_serve_daemon_timeout_test() {
     use std::net::TcpListener;
 

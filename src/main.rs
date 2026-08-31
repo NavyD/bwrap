@@ -528,9 +528,9 @@ async fn spawn_daemon(
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::Threading::{
-            CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
         };
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
     let child = cmd.spawn()?;
     info!(cmd = ?cmd, child = ?child, "spawned agent server");
