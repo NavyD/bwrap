@@ -32,55 +32,11 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let mut cli = BWCli::parse();
     let unknown_code: u8 = 255;
-
-    let (bw_args, cfg_serve_args) = if let Some(c) = &cli.bw_args.daemon_cfg {
-        match json_dec::<BWDaemonCfg>(c) {
-            Ok(d) => (d.0, Some(d.1)),
-            Err(e) => {
-                eprintln!(
-                    "failed to parsing json {} by error: {}",
-                    std::any::type_name::<BWDaemonCfg>(),
-                    e
-                );
-                return unknown_code.into();
-            }
-        }
-    } else {
-        (cli.bw_args, None)
-    };
-    cli.bw_args = bw_args;
-
-    let _log_guards = match init_log(&cli.bw_args.log_file) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("failed to init log by error: {}", e);
-            return unknown_code.into();
-        }
-    };
-
-    use BWCommands::*;
-    let res = match &cli.cmd {
-        Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await,
-        Some(List(args)) => bw_list(&cli.bw_args, args).await,
-        Some(Status) => bw_status(&cli.bw_args).await,
-        Some(Serve(serve_args)) => {
-            bw_serve(
-                &cli.bw_args,
-                cfg_serve_args.as_ref().unwrap_or(serve_args),
-            )
-            .await
-        }
-        Some(Unlock(unlock_args)) => bw_unlock(&cli.bw_args, unlock_args).await,
-        Some(External(sub_args)) => bw_external(&cli.bw_args, sub_args).await,
-        None => Ok(()),
-    };
-    let Err(e) = res else {
+    let Err(e) = run().await else {
         return ExitCode::SUCCESS;
     };
 
-    error!(error = %e, cli = ?cli, "failed to run cmd");
     // 保证输出和 exitcode 与原 bw 一致
     let (code, emsg) = e
         .downcast::<BWCliError>()
@@ -98,6 +54,45 @@ async fn main() -> ExitCode {
             .expect("write str error");
     }
     code.into()
+}
+
+async fn run() -> Result<()> {
+    let mut cli = BWCli::try_parse()?;
+    trace!(cli = ?cli, "parsed BWCli");
+
+    let (bw_args, cfg_serve_args) = if let Some(c) = &cli.bw_args.daemon_cfg {
+        let d = json_dec::<BWDaemonCfg>(c).inspect_err(|e| {
+            error!(
+                type = std::any::type_name::<BWDaemonCfg>(),
+                json_str = c,
+                error = %e,
+                "parsing json error",
+            )
+        })?;
+        (d.0, Some(d.1))
+    } else {
+        (cli.bw_args, None)
+    };
+    cli.bw_args = bw_args;
+
+    let _log_guards = init_log(&cli.bw_args.log_file)?;
+
+    use BWCommands::*;
+    match &cli.cmd {
+        Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await,
+        Some(List(args)) => bw_list(&cli.bw_args, args).await,
+        Some(Status) => bw_status(&cli.bw_args).await,
+        Some(Serve(serve_args)) => {
+            bw_serve(
+                &cli.bw_args,
+                cfg_serve_args.as_ref().unwrap_or(serve_args),
+            )
+            .await
+        }
+        Some(Unlock(unlock_args)) => bw_unlock(&cli.bw_args, unlock_args).await,
+        Some(External(sub_args)) => bw_external(&cli.bw_args, sub_args).await,
+        None => Ok(()),
+    }
 }
 
 fn init_log(
@@ -520,25 +515,6 @@ async fn spawn_daemon(
     let exe = std::env::current_exe()?;
     let mut cmd = process::Command::new(exe);
     cmd.args(["serve", "--daemon-cfg", &daemon_cfg])
-        // cmd.args([
-        //     "--bw-path",
-        //     &bw_args.bw_path,
-        //     "serve",
-        //     "--hostname",
-        //     &serve_args.hostname,
-        //     "--wait-port-timeout",
-        //     &humantime::format_duration(serve_args.wait_port_timeout).to_string(),
-        //     "--idle-lock-timeout",
-        //     &humantime::format_duration(serve_args.idle_lock_timeout).to_string(),
-        //     "--port",
-        //     &serve_args.port.to_string(),
-        //     "--log-file",
-        //     "stderr",
-        //     "--log-file",
-        //     log_path
-        //         .to_str()
-        //         .ok_or_else(|| anyhow!("{:?} to str error", log_path))?,
-        // ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
