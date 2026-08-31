@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bwrap::agent_server::BWAgentConfig;
-use bwrap::bwserve_api::{BWGetArgs, BwListArgs};
+use bwrap::bwserve_api::{
+    BWGetArgs, BwListArgs, DEFAULT_LOCALHOST_IP, DEFAULT_TCP_PORT,
+};
 use bwrap::{agent_server, bwserve_api};
 use clap::{CommandFactory, Parser, Subcommand};
 use directories::ProjectDirs;
@@ -22,6 +24,7 @@ use tokio::process;
 use tracing::level_filters::LevelFilter;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, trace, warn};
+use url::Url;
 
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 #[global_allocator]
@@ -206,8 +209,12 @@ struct BWArgs {
     nointeraction: bool,
 
     // NOTE: 私有选项
-    #[arg(long, global = true, default_value = "http://localhost:8087")]
-    api_url: url::Url,
+    #[arg(long, global = true, default_value_t = format!(
+        "http://{}:{}",
+        DEFAULT_LOCALHOST_IP,
+        DEFAULT_TCP_PORT
+    ))]
+    api_url: String,
     #[arg(long, global = true, default_value = "bw")]
     bw_path: String,
     #[arg(long, global = true)]
@@ -222,9 +229,9 @@ struct BWArgs {
 
 #[derive(clap::Args, Debug, Clone, Deserialize, Serialize)]
 struct BWServeArgs {
-    #[arg(long, default_value = "localhost")]
+    #[arg(long, default_value = DEFAULT_LOCALHOST_IP)]
     hostname: String,
-    #[arg(long, default_value_t = 8087)]
+    #[arg(long, default_value_t = DEFAULT_TCP_PORT)]
     port: u16,
 
     #[arg(
@@ -502,7 +509,7 @@ async fn spawn_daemon(
     }
 
     let mut bw_args = bw_args.clone();
-    bw_args.log_file = vec![BWLogFile::File(log_path)];
+    bw_args.log_file = vec![BWLogFile::Stderr, BWLogFile::File(log_path)];
     bw_args.daemon_cfg = None;
     let mut serve_args = serve_args.clone();
     serve_args.daemon = false;
@@ -555,7 +562,7 @@ async fn spawn_daemon(
 }
 
 async fn get_api_url(bw_args: &BWArgs) -> Result<String> {
-    let url = &bw_args.api_url;
+    let url = &bw_args.api_url.parse::<Url>()?;
     let hostname = url
         .host_str()
         .ok_or_else(|| anyhow!("not found host in {url}"))?;

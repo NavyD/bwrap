@@ -309,7 +309,8 @@ async fn bw_unlock_stop_daemon_test() {
 
 const ENV_RUST_LOG: &str = "error,bwrap=trace,bw=trace";
 
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(8))]
 #[cfg(unix)]
 fn bw_unlock_restart_test() {
     let stdout = "bw-session-xx";
@@ -369,17 +370,31 @@ fn bw_external_test(#[case] bw: MockBW, #[case] args: &[&str]) {
         .stdout(predicate::str::diff(bw.stdout.unwrap_or("".to_string())));
 }
 
-#[test]
+#[rstest]
+// NOTE: 由于默认的超时至少2s，必须高点
+#[timeout(Duration::from_secs(10))]
+#[cfg(unix)]
 fn bw_serve_daemon_timeout_test() {
-    let port = 18087.to_string();
+    use std::net::TcpListener;
+
+    let hostname = "127.101.22.33";
+    let listener = TcpListener::bind((hostname, 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let port = addr.port().to_string();
+
     let timeout = Duration::from_millis(800);
     let bw_path = mock_bw_path(MockBW::builder().build()).unwrap();
     Command::cargo_bin(BIN_NAME)
         .unwrap()
         .env("BW_SESSION", "xx")
+        .env("RUST_LOG", ENV_RUST_LOG)
         .args(["--bw-path", bw_path.to_str().unwrap()])
         .args([
             "serve",
+            "--hostname",
+            hostname,
             "--port",
             &port,
             "--daemon",
@@ -395,8 +410,9 @@ fn bw_serve_daemon_timeout_test() {
 
     Command::cargo_bin(BIN_NAME)
         .unwrap()
+        .env("RUST_LOG", ENV_RUST_LOG)
         .args(["--bw-path", bw_path.to_str().unwrap()])
-        .args(["serve", "--stop", "--port", &port])
+        .args(["serve", "--stop", "--hostname", hostname, "--port", &port])
         .output()
         .unwrap()
         .assert()

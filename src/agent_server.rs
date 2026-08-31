@@ -18,6 +18,8 @@ use tokio::{
 };
 use url::Url;
 
+use crate::bwserve_api::DEFAULT_LOCALHOST_IP;
+
 #[derive(Debug)]
 pub struct BWAgentConfig {
     pub idle_lock_timeout: time::Duration,
@@ -109,7 +111,7 @@ async fn build_router(state: AppState) -> Result<Router> {
 }
 
 async fn get_bw_serve_url() -> Result<Url> {
-    let hostname = "127.0.0.1";
+    let hostname = DEFAULT_LOCALHOST_IP;
     let port = net::TcpListener::bind((hostname, 0))
         .await?
         .local_addr()?
@@ -119,8 +121,11 @@ async fn get_bw_serve_url() -> Result<Url> {
 }
 
 async fn spawn_bw_serve(bw_path: &Path, url: &Url) -> Result<process::Child> {
-    let mut args =
-        vec!["serve", "--hostname", url.host_str().unwrap_or("localhost")];
+    let mut args = vec![
+        "serve",
+        "--hostname",
+        url.host_str().unwrap_or(DEFAULT_LOCALHOST_IP),
+    ];
     let port_str = url.port_or_known_default().map(|v| v.to_string());
     if let Some(p) = &port_str {
         args.extend_from_slice(&["--port", p]);
@@ -238,7 +243,7 @@ mod tests {
             args: Arc::new(BWAgentConfig {
                 idle_lock_timeout: Duration::from_secs(60),
                 bw_path: PathBuf::from("/nonexistent/bw"),
-                listen_url: "http://localhost:8087".to_string(),
+                listen_url: "http://127.0.0.1:8087".to_string(),
                 bw_serve_url: None,
             }),
             idle_lock_task: Arc::new(Mutex::new(None)),

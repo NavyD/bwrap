@@ -178,6 +178,9 @@ pub struct BWServeApi {
     client: reqwest::Client,
 }
 
+pub const DEFAULT_LOCALHOST_IP: &str = "127.0.0.1";
+pub const DEFAULT_TCP_PORT: u16 = 8087;
+
 impl BWServeApi {
     pub fn new(base_url: &str) -> Result<Self> {
         let api_url = base_url.parse::<Url>()?;
@@ -191,13 +194,13 @@ impl BWServeApi {
                 let mut client_build = Client::builder();
                 client_build = client_build.unix_socket(api_url.path());
                 // bw serve 未指定端口时默认端口为 8087
-                // reqwest 需要 url 查找 path 如 http://localhost:8087/object/item/xx，host:port
+                // reqwest 需要 url 查找 path 如 http://127.0.0.1:8087/object/item/xx，host:port
                 // 部分会作为 header `Host: $host:$port` 用于服务端检查。
                 // 使用 unix socket 需要与 bw serve 的端口一致避免无法通过检查导致 forbidden
                 let api_url = format!(
                     "http://{}:{}",
-                    api_url.host_str().unwrap_or("localhost"),
-                    api_url.port().unwrap_or(8087)
+                    api_url.host_str().unwrap_or(DEFAULT_LOCALHOST_IP),
+                    api_url.port().unwrap_or(DEFAULT_TCP_PORT)
                 )
                 .parse()?;
                 (api_url, client_build)
@@ -315,10 +318,10 @@ mod test {
         "http://example.com:8080/path/to/",
         "http://example.com:8080/path/to/"
     )]
-    #[case("unix:///tmp/bw-serve.sock", "http://localhost:8087")]
+    #[case("unix:///tmp/bw-serve.sock", "http://127.0.0.1:8087")]
     #[case(
-        "unix://localhost:18888/tmp/bw-serve.sock",
-        "http://localhost:18888"
+        "unix://127.0.0.1:18888/tmp/bw-serve.sock",
+        "http://127.0.0.1:18888"
     )]
     #[cfg(unix)]
     fn new_api_with_url_test(
