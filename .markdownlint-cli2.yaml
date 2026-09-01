@@ -8,6 +8,7 @@ fix: false
 
 ignores:
   - docs/superpowers/**/*.md
+  - AGENTS.md
 
 config:
   default: true
