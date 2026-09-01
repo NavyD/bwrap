@@ -1,3 +1,9 @@
+## v0.4.1 (2026-09-01)
+
+### Fix
+
+- use CARGO_PKG_NAME for project dirs and default daemon log to info
+
 ## v0.4.0 (2026-08-31)
 
 ### Feat
