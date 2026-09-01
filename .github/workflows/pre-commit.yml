@@ -1,0 +1,46 @@
+name: Prek checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prek:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: j178/prek-action@v3.0.0
+        with:
+          # editorconfig-checker-disable
+          extra-args: >-
+            ${{
+              (
+                github.event_name == 'pull_request' && format(
+                  '--from-ref {0} --to-ref {1}',
+                  github.event.pull_request.base.sha,
+                  github.event.pull_request.head.sha
+                )
+              ) ||
+              (
+                github.event_name == 'push' &&
+                  github.event.before != '0000000000000000000000000000000000000000' &&
+                  format(
+                    '--from-ref {0} --to-ref {1}',
+                    github.event.before,
+                    github.event.after
+                  )
+              ) ||
+              '--all-files'
+            }}
+          # editorconfig-checker-enable
