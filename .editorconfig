@@ -11,3 +11,7 @@ max_line_length = 80
 [*.rs]
 max_line_length = 100
 indent_size = 4
+
+[.github/workflows/release.yml]
+# 禁用限制
+max_line_length = off
