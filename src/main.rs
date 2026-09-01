@@ -474,9 +474,10 @@ async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
     Ok(())
 }
 
-static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
-    ProjectDirs::from("xyz", "navyd", env!("CARGO_BIN_NAME")).expect("not found project dirs")
-});
+const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const LOG_ENV_NAME: &str = "RUST_LOG";
+static PROJECT_DIRS: LazyLock<ProjectDirs> =
+    LazyLock::new(|| ProjectDirs::from("xyz", "navyd", PKG_NAME).expect("not found project dirs"));
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct BWDaemonCfg(BWArgs, BWServeArgs);
@@ -500,6 +501,11 @@ async fn spawn_daemon(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<proc
     let exe = std::env::current_exe()?;
     let mut cmd = process::Command::new(exe);
     cmd.args(["serve", "--daemon-cfg", &daemon_cfg])
+        // 默认后台进程的日志级别为 info
+        .env(
+            LOG_ENV_NAME,
+            std::env::var(LOG_ENV_NAME).unwrap_or_else(|_| format!("error,{}=info", PKG_NAME)),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
