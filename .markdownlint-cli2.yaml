@@ -1,0 +1,22 @@
+# $schema:https://raw.githubusercontent.com/DavidAnson/markdownlint-cli2/refs/heads/main/schema/markdownlint-cli2-config-schema.json # editorconfig-checker-disable-line
+# https://github.com/DavidAnson/markdownlint-cli2/blob/main/test/markdownlint-cli2-yaml-example/.markdownlint-cli2.yaml # editorconfig-checker-disable-line
+gitignore: true
+noProgress: true
+noBanner: true
+# 禁止修改文件，由 prettier 解决
+fix: false
+
+ignores:
+  - docs/superpowers/**/*.md
+
+config:
+  default: true
+
+overrides:
+  # NOTE: 对于 nvim-lint 使用 stdin 可能由于文件名无法匹配导致 overrides 无效
+  - filter:
+      - CHANGELOG.md
+    combine: merge
+    config:
+      no-duplicate-heading: false
+      first-line-heading: false

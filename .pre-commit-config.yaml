@@ -1,0 +1,76 @@
+default_install_hook_types: [pre-commit, pre-push, commit-msg]
+# A fast Git hook manager written in Rust, designed as a drop-in alternative to
+# pre-commit, reimagined. https://github.com/j178/prek
+minimum_prek_version: "0.4.14"
+
+fail_fast: false
+
+repos:
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.9.6
+    hooks:
+      - id: prettier
+        stages: [pre-commit]
+        priority: 0
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo-fmt
+        entry: cargo fmt
+        language: system
+        types: [rust]
+        args: ["--"]
+        priority: 0
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-illegal-windows-names
+        priority: 10
+      - id: check-case-conflict
+        priority: 10
+      - id: check-executables-have-shebangs
+        priority: 10
+      - id: check-added-large-files
+        priority: 10
+      - id: check-symlinks
+        priority: 10
+      - id: destroyed-symlinks
+        priority: 10
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        priority: 10
+  - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
+    rev: v1.7.12.24
+    hooks:
+      - id: actionlint
+        # editorconfig-checker-disable
+        # actionlint has built in support for pyflakes and shellcheck, sadly they will not be auto updated. Check https://pypi.org/project/actionlint-py/ for latest version. Alternatively:
+        # args: [-shellcheck=/path/shellcheck -pyflakes=/path/pyflakes]
+        # https://github.com/rhysd/actionlint/blob/main/docs/checks.md#pyflakes-integration-for-run
+        # https://github.com/rhysd/actionlint/blob/main/docs/checks.md#shellcheck-integration-for-run
+        # editorconfig-checker-enable
+        additional_dependencies: [pyflakes>=3.4.0, shellcheck-py>=0.11.0.1]
+        priority: 10
+  - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
+    rev: 3.11.1
+    hooks:
+      - id: editorconfig-checker
+        priority: 10
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.2
+    hooks:
+      - id: markdownlint-cli2
+        priority: 10
+  - repo: https://github.com/tombi-toml/tombi-pre-commit
+    rev: v1.5.0
+    hooks:
+      - id: tombi-format
+        args: [--offline]
+        exclude: '^.*\.lock$'
+        priority: 0
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.18.0
+    hooks:
+      - id: commitizen
