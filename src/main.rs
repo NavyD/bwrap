@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bwrap::agent_server::BWAgentConfig;
-use bwrap::bwserve_api::{
-    BWGetArgs, BwListArgs, DEFAULT_LOCALHOST_IP, DEFAULT_TCP_PORT,
-};
+use bwrap::bwserve_api::{BWGetArgs, BwListArgs, DEFAULT_LOCALHOST_IP, DEFAULT_TCP_PORT};
 use bwrap::{agent_server, bwserve_api};
 use clap::{CommandFactory, Parser, Subcommand};
 use directories::ProjectDirs;
@@ -83,11 +81,7 @@ async fn run() -> Result<()> {
         Some(List(args)) => bw_list(&cli.bw_args, args).await,
         Some(Status) => bw_status(&cli.bw_args).await,
         Some(Serve(serve_args)) => {
-            bw_serve(
-                &cli.bw_args,
-                cfg_serve_args.as_ref().unwrap_or(serve_args),
-            )
-            .await
+            bw_serve(&cli.bw_args, cfg_serve_args.as_ref().unwrap_or(serve_args)).await
         }
         Some(Unlock(unlock_args)) => bw_unlock(&cli.bw_args, unlock_args).await,
         Some(External(sub_args)) => bw_external(&cli.bw_args, sub_args).await,
@@ -95,9 +89,7 @@ async fn run() -> Result<()> {
     }
 }
 
-fn init_log(
-    log_files: &[BWLogFile],
-) -> Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
+fn init_log(log_files: &[BWLogFile]) -> Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
     use tracing_appender::rolling;
     use tracing_subscriber::Registry;
     use tracing_subscriber::prelude::*;
@@ -300,10 +292,7 @@ async fn bw_external(bw_args: &BWArgs, sub_args: &[String]) -> Result<()> {
     Err(BWCliError::Follow(st).into())
 }
 
-async fn write_str(
-    mut w: impl AsyncWriteExt + Unpin,
-    s: impl AsRef<str>,
-) -> Result<()> {
+async fn write_str(mut w: impl AsyncWriteExt + Unpin, s: impl AsRef<str>) -> Result<()> {
     w.write_all(s.as_ref().as_bytes()).await?;
     w.write_u8(b'\n').await?;
     w.flush().await?;
@@ -412,8 +401,8 @@ async fn get_bw_unlock_cmd_args(
 
     let mut extend_args = |(name, val): (&str, &dyn Any)| -> Result<()> {
         // 从子命令或父命令中获取选项
-        let opt_name = get_clap_opt(subcmd, name)
-            .or_else(|e| get_clap_opt(&cmd, name).context(e))?;
+        let opt_name =
+            get_clap_opt(subcmd, name).or_else(|e| get_clap_opt(&cmd, name).context(e))?;
         if let Some(v) = val.downcast_ref::<bool>() {
             if *v {
                 cmd_args.push(opt_name);
@@ -486,18 +475,14 @@ async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
 }
 
 static PROJECT_DIRS: LazyLock<ProjectDirs> = LazyLock::new(|| {
-    ProjectDirs::from("xyz", "navyd", env!("CARGO_BIN_NAME"))
-        .expect("not found project dirs")
+    ProjectDirs::from("xyz", "navyd", env!("CARGO_BIN_NAME")).expect("not found project dirs")
 });
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct BWDaemonCfg(BWArgs, BWServeArgs);
 
 /// 以当前可执行文件拉起后台 daemon（`bwrap serve --hostname --port`）
-async fn spawn_daemon(
-    bw_args: &BWArgs,
-    serve_args: &BWServeArgs,
-) -> Result<process::Child> {
+async fn spawn_daemon(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<process::Child> {
     let log_path = PROJECT_DIRS.cache_dir().join("bw-serve-daemon.log");
     if let Some(pp) = log_path.parent() {
         fs::create_dir_all(pp).await?
@@ -521,15 +506,11 @@ async fn spawn_daemon(
 
     #[cfg(unix)]
     unsafe {
-        cmd.pre_exec(|| {
-            rustix::process::setsid().map(|_| ()).map_err(Into::into)
-        })
+        cmd.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into))
     };
     #[cfg(windows)]
     {
-        use windows_sys::Win32::System::Threading::{
-            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-        };
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
     let child = cmd.spawn()?;
@@ -553,10 +534,7 @@ async fn get_api_url(bw_args: &BWArgs) -> Result<String> {
     Ok(url)
 }
 
-async fn start_bw_serve_daemon(
-    bw_args: &BWArgs,
-    serve_args: &BWServeArgs,
-) -> Result<()> {
+async fn start_bw_serve_daemon(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     let mut child = spawn_daemon(bw_args, serve_args).await?;
 
     let Err(e) = wait_tcp_port(
@@ -634,13 +612,7 @@ async fn find_real_bw(path: impl Into<String>) -> Result<PathBuf> {
         let exe = std::env::current_exe()?.canonicalize()?;
         which::which_all(&path)?
             .find(|p| p.canonicalize().as_ref().unwrap_or(p) != &exe)
-            .ok_or_else(|| {
-                anyhow!(
-                    "not found bin {} filter by exe {}",
-                    path,
-                    exe.display()
-                )
-            })
+            .ok_or_else(|| anyhow!("not found bin {} filter by exe {}", path, exe.display()))
     })
     .await?
 }
@@ -662,10 +634,7 @@ async fn addr_in_use(addr: impl ToSocketAddrs + Debug) -> Result<bool> {
 }
 
 /// --daemon：端口空闲则后台拉起，否则报错
-async fn bw_serve_daemon(
-    bw_args: &BWArgs,
-    serve_args: &BWServeArgs,
-) -> Result<()> {
+async fn bw_serve_daemon(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<()> {
     if serve_args.restart
         && let Err(e) = bw_serve_stop(serve_args).await
     {
@@ -750,8 +719,7 @@ mod tests {
 
     #[test]
     fn serve_daemon_flag_parses() {
-        let cli =
-            BWCli::try_parse_from(["bwrap", "serve", "--daemon"]).unwrap();
+        let cli = BWCli::try_parse_from(["bwrap", "serve", "--daemon"]).unwrap();
         match &cli.cmd {
             Some(BWCommands::Serve(a)) => assert!(a.daemon),
             _ => panic!("expected serve subcommand"),
@@ -769,8 +737,7 @@ mod tests {
 
     #[test]
     fn serve_restart_flag_parses() {
-        let cli =
-            BWCli::try_parse_from(["bwrap", "serve", "--restart"]).unwrap();
+        let cli = BWCli::try_parse_from(["bwrap", "serve", "--restart"]).unwrap();
         match &cli.cmd {
             Some(BWCommands::Serve(a)) => assert!(a.restart),
             _ => panic!("expected serve subcommand"),

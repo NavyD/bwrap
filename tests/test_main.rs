@@ -4,17 +4,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assert_cmd::{Command, assert::OutputAssertExt};
-use bwrap::bwserve_api::{
-    BWServeGetRespData, BWServeResp, BWServeStatusRespData, VaultItem,
-};
+use bwrap::bwserve_api::{BWServeGetRespData, BWServeResp, BWServeStatusRespData, VaultItem};
 use httpmock::Method::POST;
 use httpmock::{Method::GET, MockServer};
 use jsonpath_rust::JsonPath;
 use predicates::prelude::*;
 use rstest::{fixture, rstest};
 use serde_json::{
-    Value, from_str as json_dec, from_value as json_dec_value, json,
-    to_string as json_enc,
+    Value, from_str as json_dec, from_value as json_dec_value, json, to_string as json_enc,
 };
 use similar_asserts::assert_eq;
 
@@ -50,6 +47,7 @@ where
 
 #[fixture]
 fn item_gh_sshkey() -> Value {
+    // editorconfig-checker-disable
     json!({
       "type": 5,
       "name": "github",
@@ -69,6 +67,7 @@ fn item_gh_sshkey() -> Value {
       "revisionDate": "2024-12-26T09:15:13.396Z",
       "attachments": []
     })
+    // editorconfig-checker-enable
 }
 
 #[fixture]
@@ -111,9 +110,7 @@ fn item_gh() -> Value {
 
 #[rstest]
 #[tokio::test]
-async fn bw_status_stdout_test(
-    #[values("locked", "unlocked", "unauthenticated")] status: &str,
-) {
+async fn bw_status_stdout_test(#[values("locked", "unlocked", "unauthenticated")] status: &str) {
     let data = json!({
         "serverUrl": "https://vault.example.com",
         "lastSync": "2026-08-04T02:07:01.434Z",
@@ -133,9 +130,14 @@ async fn bw_status_stdout_test(
     let (mut cmd, _server) = bwcmd(["status"], body).await;
     cmd.assert()
         .success()
-        .stdout(predicate::str::is_empty().trim().not().and(
-            predicate::function(|s| json_dec::<Value>(s).unwrap() == data),
-        ));
+        .stdout(
+            predicate::str::is_empty()
+                .trim()
+                .not()
+                .and(predicate::function(|s| {
+                    json_dec::<Value>(s).unwrap() == data
+                })),
+        );
 }
 
 #[tokio::test]
@@ -145,10 +147,7 @@ async fn bw_status_stdout_test(
     "$.login['username', 'password', 'totp']",
 ])]
 #[case(item_gh_sshkey(), &["$.sshKey.*"])]
-async fn bw_get_item_stdout_test(
-    #[case] item_val: Value,
-    #[case] jsonpaths: &[&str],
-) {
+async fn bw_get_item_stdout_test(#[case] item_val: Value, #[case] jsonpaths: &[&str]) {
     let item: VaultItem = json_dec_value(item_val.clone()).unwrap();
     let body = json_enc(&BWServeResp {
         success: true,
@@ -177,8 +176,7 @@ async fn bw_get_item_error_test() {
         message: Some("Not found.".to_string()),
         data: None::<String>,
     };
-    let (mut cmd, _server) =
-        bwcmd(["get", "item", "xxx"], json_enc(&data).unwrap()).await;
+    let (mut cmd, _server) = bwcmd(["get", "item", "xxx"], json_enc(&data).unwrap()).await;
     cmd.env("RUST_LOG", "off")
         .output()
         .unwrap()
@@ -192,8 +190,7 @@ async fn bw_get_item_error_test() {
 async fn bw_unlock_when_bw_error_test() {
     MockBW::builder().exitcode(111).build().run(|bw, bw_path| {
         let args = vec!["unlock", "--bw-path", bw_path.to_str().unwrap()];
-        let mut cmd =
-            Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
+        let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
         cmd.args(args)
             .output()
             .unwrap()
@@ -223,10 +220,7 @@ impl MockBW {
             .unwrap();
         if let Some(s) = &self.stdout {
             fs::write(&stdout_path, s).unwrap();
-            args.push((
-                "MOCKBW_STDOUT_FILE",
-                stdout_path.path().to_str().unwrap(),
-            ));
+            args.push(("MOCKBW_STDOUT_FILE", stdout_path.path().to_str().unwrap()));
         }
         let stderr_path = tempfile::Builder::new()
             .prefix("bw-")
@@ -235,10 +229,7 @@ impl MockBW {
             .unwrap();
         if let Some(s) = &self.stderr {
             fs::write(&stderr_path, s).unwrap();
-            args.push((
-                "MOCKBW_STDERR_FILE",
-                stderr_path.path().to_str().unwrap(),
-            ));
+            args.push(("MOCKBW_STDERR_FILE", stderr_path.path().to_str().unwrap()));
         }
         let exitcode = self.exitcode.to_string();
         args.push(("MOCKBW_EXITCODE", &exitcode));
@@ -247,9 +238,7 @@ impl MockBW {
             .into_iter()
             .map(|v| (v.0, Some(v.1)))
             .collect::<Vec<_>>();
-        temp_env::with_vars(args, || {
-            f(self, env!("CARGO_BIN_EXE_mockbw").into())
-        })
+        temp_env::with_vars(args, || f(self, env!("CARGO_BIN_EXE_mockbw").into()))
     }
 }
 
@@ -268,8 +257,7 @@ fn bw_unlock_stop_daemon_test() {
                 })
                 .await;
 
-            let mut cmd =
-                Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
+            let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
             cmd.args(args)
                 .output()
                 .unwrap()
@@ -325,9 +313,9 @@ const BIN_NAME: &str = env!("CARGO_PKG_NAME");
 #[case(MockBW::builder().build(), &["sync"])]
 #[case(MockBW::builder().stdout("Your vault is locked.").build(), &["lock"])]
 #[case(
-     MockBW::builder().exitcode(121).stderr("unknown-subcmd error").build(),
-     &["unknown-subcmd"]
- )]
+    MockBW::builder().exitcode(121).stderr("unknown-subcmd error").build(),
+    &["unknown-subcmd"]
+)]
 fn bw_external_test(#[case] bw: MockBW, #[case] args: &[&str]) {
     bw.run(|bw, bw_path| {
         Command::cargo_bin(BIN_NAME)

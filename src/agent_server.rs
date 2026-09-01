@@ -49,8 +49,7 @@ pub async fn start(args: BWAgentConfig) -> Result<()> {
     let mut shutdown_state = state.clone();
     let app = build_router(state).await?;
 
-    let addr =
-        listen_url.socket_addrs(|| listen_url.port_or_known_default())?;
+    let addr = listen_url.socket_addrs(|| listen_url.port_or_known_default())?;
     tracing::info!(addr = ?addr, "tcp serving");
     let listener = net::TcpListener::bind(&*addr).await?;
 
@@ -88,9 +87,7 @@ async fn build_router(state: AppState) -> Result<Router> {
     let mut app = Router::<AppState>::new();
     app = app.route("/__bwrap/shutdown", axum::routing::post(shutdown_handler));
     app = match state.bw_serve_url.scheme() {
-        "http" | "https" => {
-            app.merge(ReverseProxy::new("/", state.bw_serve_url.as_str()))
-        }
+        "http" | "https" => app.merge(ReverseProxy::new("/", state.bw_serve_url.as_str())),
         _ => bail!("Unsupported scheme for url {}", state.bw_serve_url),
     };
     let app = app
@@ -159,10 +156,7 @@ struct IdleLockTask {
     deadline_tx: watch::Sender<time::Instant>,
 }
 
-async fn middleware_start_bw_serve<B>(
-    State(s): State<AppState>,
-    req: Request<B>,
-) -> Request<B> {
+async fn middleware_start_bw_serve<B>(State(s): State<AppState>, req: Request<B>) -> Request<B> {
     let mut lock = s.bw_serve_child.lock().await;
     // 如果 bw serve 进程不存在或已终止
     if lock
@@ -181,10 +175,7 @@ async fn middleware_start_bw_serve<B>(
     }
     req
 }
-async fn middleware_idle_lock<B>(
-    State(mut s): State<AppState>,
-    resp: Response<B>,
-) -> Response<B> {
+async fn middleware_idle_lock<B>(State(mut s): State<AppState>, resp: Response<B>) -> Response<B> {
     idle_shutdown(&mut s).await;
     resp
 }

@@ -2,10 +2,7 @@ use anyhow::{Result, bail};
 use heck::ToKebabCase;
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sonic_rs::{
-    JsonContainerTrait, JsonValueTrait, ValueRef,
-    from_slice as de_json_from_slice,
-};
+use sonic_rs::{JsonContainerTrait, JsonValueTrait, ValueRef, from_slice as de_json_from_slice};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, trace, warn};
 use url::Url;
@@ -238,10 +235,7 @@ impl BWServeApi {
     }
 
     #[instrument]
-    pub async fn get(
-        &self,
-        args: &BWGetArgs,
-    ) -> Result<BWServeResp<BWServeGetRespData>> {
+    pub async fn get(&self, args: &BWGetArgs) -> Result<BWServeResp<BWServeGetRespData>> {
         let url = self.base_url.join(&format!(
             "/object/{}/{}",
             args.object.to_kebab_case(),
@@ -263,9 +257,7 @@ impl BWServeApi {
         let list_url_params = sonic_rs::to_value(args)?
             .as_object()
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "list args is not a object for url query args: {args:?}"
-                )
+                anyhow::anyhow!("list args is not a object for url query args: {args:?}")
             })?
             .iter()
             // List all items in the trash. This query parameter is not a true boolean,
@@ -314,20 +306,11 @@ mod test {
 
     #[rstest]
     #[case("http://example.com:8080/", "http://example.com:8080")]
-    #[case(
-        "http://example.com:8080/path/to/",
-        "http://example.com:8080/path/to/"
-    )]
+    #[case("http://example.com:8080/path/to/", "http://example.com:8080/path/to/")]
     #[case("unix:///tmp/bw-serve.sock", "http://127.0.0.1:8087")]
-    #[case(
-        "unix://127.0.0.1:18888/tmp/bw-serve.sock",
-        "http://127.0.0.1:18888"
-    )]
+    #[case("unix://127.0.0.1:18888/tmp/bw-serve.sock", "http://127.0.0.1:18888")]
     #[cfg(unix)]
-    fn new_api_with_url_test(
-        #[case] url: &str,
-        #[case] expected: &str,
-    ) -> Result<()> {
+    fn new_api_with_url_test(#[case] url: &str, #[case] expected: &str) -> Result<()> {
         let api = BWServeApi::new(url)?;
         let expected = expected.parse::<Url>()?;
         assert_eq!(api.base_url, expected);
