@@ -2,13 +2,19 @@ name: CI
 
 on:
   pull_request:
-    paths-ignore:
-      - .github/**
-      - docs/**
-      - "*.md"
-      - dist-workspace.toml
-      - .editorconfig
-      - .cz.toml
+    paths:
+      - .github/workflows/ci.yml
+      - Cargo.toml
+      - Cargo.lock
+      - clippy.toml
+      - rust-toolchain.toml
+      - .rustfmt.toml
+      - build.rs
+      - .cargo/**
+      - src/**
+      - tests/**
+      - benches/**
+      - examples/**
 
 concurrency:
   # 按引用（分支/PR合并引用）严格串行 ci
