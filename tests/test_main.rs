@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assert_cmd::{Command, assert::OutputAssertExt};
-use bwrap::bwserve_api::{BWServeGetRespData, BWServeResp, BWServeStatusRespData, VaultItem};
+use bwrap::bwserve_api::{
+    BWServeGetRespData, BWServeResp, BWServeStatusRespData, BWServeStatusTemplate,
+    BWServeSyncRespData, VaultItem,
+};
 use httpmock::Method::POST;
 use httpmock::{Method::GET, MockServer};
 use jsonpath_rust::JsonPath;
@@ -108,25 +111,30 @@ fn item_gh() -> Value {
     })
 }
 
-#[rstest]
-#[tokio::test]
-async fn bw_status_stdout_test(#[values("locked", "unlocked", "unauthenticated")] status: &str) {
+fn status_unlocked() -> BWServeResp<BWServeStatusRespData> {
     let data = json!({
         "serverUrl": "https://vault.example.com",
         "lastSync": "2026-08-04T02:07:01.434Z",
         "userEmail": "user@example.com",
         "userId": "45e630c6-ba45-4f7a-93a4-935376a025d8",
-        "status": status,
+        "status": "unlocked",
     });
-    let body = json_enc(&BWServeResp {
+    BWServeResp {
         success: true,
         data: Some(BWServeStatusRespData {
             object: "template".to_string(),
             template: json_dec_value(data.clone()).unwrap(),
         }),
         message: None,
-    })
-    .unwrap();
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn bw_status_stdout_test(#[values("locked", "unlocked", "unauthenticated")] status: &str) {
+    let mut resp = status_unlocked();
+    resp.data.as_mut().unwrap().template.status = status.to_string();
+    let body = json_enc(&resp).unwrap();
     let (mut cmd, _server) = bwcmd(["status"], body).await;
     cmd.assert()
         .success()
@@ -135,7 +143,8 @@ async fn bw_status_stdout_test(#[values("locked", "unlocked", "unauthenticated")
                 .trim()
                 .not()
                 .and(predicate::function(|s| {
-                    json_dec::<Value>(s).unwrap() == data
+                    json_dec::<BWServeStatusTemplate>(s).unwrap()
+                        == resp.data.as_ref().unwrap().template
                 })),
         );
 }
@@ -310,7 +319,6 @@ fn bw_unlock_restart_test() {
 const BIN_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[rstest]
-#[case(MockBW::builder().build(), &["sync"])]
 #[case(MockBW::builder().stdout("Your vault is locked.").build(), &["lock"])]
 #[case(
     MockBW::builder().exitcode(121).stderr("unknown-subcmd error").build(),
@@ -380,5 +388,67 @@ fn bw_serve_daemon_timeout_test() {
             .assert()
             .failure()
             .stderr(predicate::str::contains(port));
+    });
+}
+
+#[rstest]
+#[case(&[])]
+#[case(&["--force"])]
+fn bw_sync_test(#[case] args: &[&str]) {
+    let data = BWServeResp {
+        success: true,
+        data: Some(BWServeSyncRespData {
+            title: Some("Syncing complete.".to_string()),
+            no_color: true,
+            object: Some("message".to_string()),
+            message: None,
+        }),
+        message: None,
+    };
+    let body = json_enc(&data).unwrap();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/sync");
+        then.status(200).body(body);
+    });
+    let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
+    cmd.args(["--api-url", &server.url("/")])
+        .args(["sync"])
+        .args(args)
+        .assert()
+        .success()
+        .stdout(predicate::eq(data.data.unwrap().title.unwrap()).trim());
+}
+
+#[test]
+fn bw_sync_last_test() {
+    let data = status_unlocked();
+    let body = json_enc(&data).unwrap();
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/status");
+        then.status(200).body(body);
+    });
+    let mut cmd = Command::cargo_bin(BIN_NAME).expect("not found cargo bin");
+    cmd.args(["--api-url", &server.url("/")])
+        .args(["sync", "--last"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::eq(data.data.unwrap().template.last_sync).trim());
+}
+
+#[test]
+fn bw_sync_external_test() {
+    let stdout = "Syncing complete.".to_string();
+    MockBW::builder().stdout(&stdout).build().run(|_, bw_path| {
+        Command::cargo_bin(BIN_NAME)
+            .unwrap()
+            .env("RUST_LOG", ENV_RUST_LOG)
+            .args(["sync", "--bw-path", bw_path.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .assert()
+            .success()
+            .stdout(predicate::eq(stdout).trim());
     });
 }

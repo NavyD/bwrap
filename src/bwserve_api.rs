@@ -123,6 +123,15 @@ pub struct BWServeResp<T> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BWServeSyncRespData {
+    pub no_color: bool,
+    pub object: Option<String>,
+    pub title: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BWServeStatusTemplate {
     pub server_url: String,
     pub last_sync: String,
@@ -295,6 +304,15 @@ impl BWServeApi {
     pub async fn status(&self) -> Result<BWServeResp<BWServeStatusRespData>> {
         let url = self.base_url.join("/status")?;
         let resp = self.client.get(url).send().await?;
+        Self::parse_resp(resp).await
+    }
+
+    pub async fn sync(&self, force: bool) -> Result<BWServeResp<BWServeSyncRespData>> {
+        let mut url = self.base_url.join("/sync")?;
+        if force {
+            url.set_query(Some("force=true"));
+        }
+        let resp = self.client.post(url).send().await?;
         Self::parse_resp(resp).await
     }
 }

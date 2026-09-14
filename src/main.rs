@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bwrap::agent_server::BWAgentConfig;
-use bwrap::bwserve_api::{BWGetArgs, BwListArgs, DEFAULT_LOCALHOST_IP, DEFAULT_TCP_PORT};
+use bwrap::bwserve_api::{
+    BWGetArgs, BWServeStatusRespData, BwListArgs, DEFAULT_LOCALHOST_IP, DEFAULT_TCP_PORT,
+};
 use bwrap::{agent_server, bwserve_api};
 use clap::{CommandFactory, Parser, Subcommand};
 use directories::ProjectDirs;
@@ -84,6 +86,7 @@ async fn run() -> Result<()> {
             bw_serve(&cli.bw_args, cfg_serve_args.as_ref().unwrap_or(serve_args)).await
         }
         Some(Unlock(unlock_args)) => bw_unlock(&cli.bw_args, unlock_args).await,
+        Some(Sync(sync_args)) => bw_sync(&cli.bw_args, sync_args).await,
         Some(External(sub_args)) => bw_external(&cli.bw_args, sub_args).await,
         None => Ok(()),
     }
@@ -263,6 +266,14 @@ struct BWUnlockArgs {
     serve_args: BWServeArgs,
 }
 
+#[derive(clap::Args, Debug, Clone)]
+struct BWSyncArgs {
+    #[arg(long, short)]
+    force: bool,
+    #[arg(long, short)]
+    last: bool,
+}
+
 #[derive(Subcommand, Debug, strum::Display)]
 // 注意： clap subcommand 默认的命令规则是 kebab-case
 // 参考 `#[command(rename_all = "snake_case")]`
@@ -273,6 +284,7 @@ enum BWCommands {
     Serve(BWServeArgs),
     Status,
     Unlock(BWUnlockArgs),
+    Sync(BWSyncArgs),
     #[command(external_subcommand)]
     External(Vec<String>),
 }
@@ -342,13 +354,14 @@ async fn bw_list(bw_args: &BWArgs, list_args: &BwListArgs) -> Result<()> {
     Ok(())
 }
 
-async fn bw_status(bw_args: &BWArgs) -> Result<()> {
+async fn do_bw_status(bw_args: &BWArgs) -> Result<BWServeStatusRespData> {
     let api = bwserve_api::BWServeApi::new(&get_api_url(bw_args).await?)?;
     let resp_data = api.status().await.handle_resp_err()?;
+    resp_data.data.ok_or_else(|| anyhow!("not found data"))
+}
 
-    let Some(data) = &resp_data.data else {
-        bail!("invalid response: {:?}", resp_data)
-    };
+async fn bw_status(bw_args: &BWArgs) -> Result<()> {
+    let data = do_bw_status(bw_args).await?;
     write_str(io::stdout(), ser_to_json(&data.template)?).await?;
     Ok(())
 }
@@ -373,12 +386,9 @@ fn get_clap_opt(c: &clap::Command, field_name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("not found arg with id={}", field_name))
 }
 
-/// 构建 bw unlock 列表参数
-async fn get_bw_unlock_cmd_args(
-    bw_args: &BWArgs,
-    unlock_args: &BWUnlockArgs,
-) -> Result<Vec<String>> {
+async fn kv2bw_cmd_args(args: &[(&str, &dyn Any)]) -> Result<(Option<String>, Vec<String>)> {
     let cmd = BWCli::command();
+    // TODO: 支持没有子命令时解析参数
     let subcmd_name = cmd
         .clone()
         .try_get_matches()?
@@ -388,17 +398,8 @@ async fn get_bw_unlock_cmd_args(
     let subcmd = cmd
         .find_subcommand(&subcmd_name)
         .context("not found subcommand")?;
-    let mut cmd_args = vec![
-        find_real_bw(&bw_args.bw_path)
-            .await?
-            .to_string_lossy()
-            .to_string(),
-        subcmd_name,
-    ];
-    if let Some(pw) = unlock_args.password.to_owned() {
-        cmd_args.push(pw);
-    }
 
+    let mut cmd_args = vec![];
     let mut extend_args = |(name, val): (&str, &dyn Any)| -> Result<()> {
         // 从子命令或父命令中获取选项
         let opt_name =
@@ -418,11 +419,37 @@ async fn get_bw_unlock_cmd_args(
         }
         bail!("Unsupported type of arg={:?}", val);
     };
-    // 编译期保证不会出现错误
-    extend_args(field_kv!(&unlock_args.check))?;
-    extend_args(field_kv!(&unlock_args.passwordenv))?;
-    extend_args(field_kv!(&unlock_args.passwordfile))?;
-    extend_args(field_kv!(&bw_args.raw))?;
+    for v in args {
+        extend_args(*v)?;
+    }
+    Ok((Some(subcmd_name), cmd_args))
+}
+
+/// 构建 bw unlock 列表参数
+async fn get_bw_unlock_cmd_args(
+    bw_args: &BWArgs,
+    unlock_args: &BWUnlockArgs,
+) -> Result<Vec<String>> {
+    let (subcmd_name, args) = kv2bw_cmd_args(&[
+        // 编译期保证不会出现错误
+        field_kv!(&unlock_args.check),
+        field_kv!(&unlock_args.passwordenv),
+        field_kv!(&unlock_args.passwordfile),
+        field_kv!(&bw_args.raw),
+    ])
+    .await?;
+
+    let mut cmd_args = vec![
+        find_real_bw(&bw_args.bw_path)
+            .await?
+            .to_string_lossy()
+            .to_string(),
+        subcmd_name.ok_or_else(|| anyhow!("not found bw sub command name"))?,
+    ];
+    if let Some(pw) = unlock_args.password.to_owned() {
+        cmd_args.push(pw);
+    }
+    cmd_args.extend(args);
     Ok(cmd_args)
 }
 
@@ -715,6 +742,40 @@ async fn wait_tcp_port(
         }
         tokio::time::sleep(interval).await;
     }
+}
+
+async fn bw_sync(bw_args: &BWArgs, sync_args: &BWSyncArgs) -> Result<()> {
+    let url = match get_api_url(bw_args).await {
+        Ok(url) => url,
+        Err(e) => {
+            // NOTE: 不能使用 std::env::args() 会传入 bwrap 的选项导致原 bw 出错
+            let mut cmd_args = vec!["sync".to_string()];
+            cmd_args.extend(
+                kv2bw_cmd_args(&[field_kv!(&sync_args.force), field_kv!(&sync_args.last)])
+                    .await?
+                    .1,
+            );
+            info!(cmd_args = ?cmd_args, error = %e, "fallback to running real bw sync");
+            return bw_external(bw_args, &cmd_args).await;
+        }
+    };
+    let mut w = io::stdout();
+    if sync_args.last {
+        let status = do_bw_status(bw_args).await?;
+        write_str(&mut w, status.template.last_sync).await?;
+        return Ok(());
+    }
+
+    let api = bwserve_api::BWServeApi::new(&url)?;
+    let resp_data = api.sync(sync_args.force).await.handle_resp_err()?;
+    let Some(data) = &resp_data.data else {
+        bail!("invalid response: {:?}", resp_data)
+    };
+
+    if let Some(s) = &data.title {
+        write_str(&mut w, s).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
