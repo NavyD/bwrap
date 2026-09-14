@@ -1,3 +1,9 @@
+## v0.5.0 (2026-09-14)
+
+### Feat
+
+- add bw sync command and /sync API support
+
 ## v0.4.1 (2026-09-01)
 
 ### Fix
