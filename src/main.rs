@@ -506,7 +506,14 @@ async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
     if !output.status.success() {
         return Err(BWCliError::Follow(output.status).into());
     }
+    // SAFETY: 单线程安全性
+    unsafe {
+        std::env::set_var(BW_SESSION_NAME, stdout.to_string());
+    }
+    do_bw_unlock_serve(bw_args, unlock_args).await
+}
 
+async fn do_bw_unlock_serve(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
     let mut serve_args = unlock_args.serve_args.clone();
     if !serve_args.restart && !serve_args.stop {
         return Ok(());
@@ -514,11 +521,6 @@ async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
     // 当指定 restart 时默认为 daemon
     if serve_args.restart && !serve_args.daemon {
         serve_args.daemon = true;
-    }
-
-    // SAFETY: 单线程安全性
-    unsafe {
-        std::env::set_var(BW_SESSION_NAME, stdout.to_string());
     }
     if let Err(e) = bw_serve(bw_args, &serve_args).await {
         info!(error = %e, "failed to stopping bw serve");
@@ -598,8 +600,15 @@ async fn get_api_url_or_unlock(
         bw_args.raw = true;
         let mut unlock_args = unlock_args.clone();
         unlock_args.serve_args.restart = true;
+
         info!(bw_args = ?bw_args, unlock_args = ?unlock_args, "unlocking when addr not used");
-        bw_unlock(&bw_args, &unlock_args).await?;
+        if let Ok(v) = std::env::var(BW_SESSION_NAME)
+            && !v.is_empty()
+        {
+            do_bw_unlock_serve(&bw_args, &unlock_args).await?;
+        } else {
+            bw_unlock(&bw_args, &unlock_args).await?;
+        }
         wait_tcp_port(addr, false, unlock_args.serve_args.wait_port_timeout).await?;
     }
     Ok(url)
