@@ -79,9 +79,15 @@ async fn run() -> Result<()> {
 
     use BWCommands::*;
     match &cli.cmd {
-        Some(Get(get_args)) => bw_get(&cli.bw_args, get_args).await,
-        Some(List(args)) => bw_list(&cli.bw_args, args).await,
-        Some(Status) => bw_status(&cli.bw_args).await,
+        Some(Get {
+            get_args,
+            unlock_args,
+        }) => bw_get(&cli.bw_args, get_args, unlock_args).await,
+        Some(List {
+            list_args,
+            unlock_args,
+        }) => bw_list(&cli.bw_args, list_args, unlock_args).await,
+        Some(Status(unlock_args)) => bw_status(&cli.bw_args, unlock_args).await,
         Some(Serve(serve_args)) => {
             bw_serve(&cli.bw_args, cfg_serve_args.as_ref().unwrap_or(serve_args)).await
         }
@@ -279,10 +285,20 @@ struct BWSyncArgs {
 // 参考 `#[command(rename_all = "snake_case")]`
 #[strum(serialize_all = "kebab-case")]
 enum BWCommands {
-    Get(BWGetArgs),
-    List(BwListArgs),
+    Get {
+        #[command(flatten)]
+        get_args: BWGetArgs,
+        #[command(flatten)]
+        unlock_args: BWUnlockArgs,
+    },
+    List {
+        #[command(flatten)]
+        list_args: BwListArgs,
+        #[command(flatten)]
+        unlock_args: BWUnlockArgs,
+    },
     Serve(BWServeArgs),
-    Status,
+    Status(BWUnlockArgs),
     Unlock(BWUnlockArgs),
     Sync(BWSyncArgs),
     #[command(external_subcommand)]
@@ -328,8 +344,9 @@ impl<T: Debug> RespErrHandler<T> for Result<bwserve_api::BWServeResp<T>> {
     }
 }
 
-async fn bw_get(bw_args: &BWArgs, get_args: &BWGetArgs) -> Result<()> {
-    let api = bwserve_api::BWServeApi::new(&get_api_url(bw_args).await?)?;
+async fn bw_get(bw_args: &BWArgs, get_args: &BWGetArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
+    let api =
+        bwserve_api::BWServeApi::new(&get_api_url_or_unlock(bw_args, Some(unlock_args)).await?)?;
     let resp_data = api.get(get_args).await.handle_resp_err()?;
 
     use bwserve_api::BWServeGetRespData::*;
@@ -342,8 +359,13 @@ async fn bw_get(bw_args: &BWArgs, get_args: &BWGetArgs) -> Result<()> {
     Ok(())
 }
 
-async fn bw_list(bw_args: &BWArgs, list_args: &BwListArgs) -> Result<()> {
-    let api = bwserve_api::BWServeApi::new(&get_api_url(bw_args).await?)?;
+async fn bw_list(
+    bw_args: &BWArgs,
+    list_args: &BwListArgs,
+    unlock_args: &BWUnlockArgs,
+) -> Result<()> {
+    let api =
+        bwserve_api::BWServeApi::new(&get_api_url_or_unlock(bw_args, Some(unlock_args)).await?)?;
     let resp_data = api.list(list_args).await.handle_resp_err()?;
 
     let Some(data) = &resp_data.data else {
@@ -354,14 +376,17 @@ async fn bw_list(bw_args: &BWArgs, list_args: &BwListArgs) -> Result<()> {
     Ok(())
 }
 
-async fn do_bw_status(bw_args: &BWArgs) -> Result<BWServeStatusRespData> {
-    let api = bwserve_api::BWServeApi::new(&get_api_url(bw_args).await?)?;
+async fn do_bw_status(
+    bw_args: &BWArgs,
+    unlock_args: Option<&BWUnlockArgs>,
+) -> Result<BWServeStatusRespData> {
+    let api = bwserve_api::BWServeApi::new(&get_api_url_or_unlock(bw_args, unlock_args).await?)?;
     let resp_data = api.status().await.handle_resp_err()?;
     resp_data.data.ok_or_else(|| anyhow!("not found data"))
 }
 
-async fn bw_status(bw_args: &BWArgs) -> Result<()> {
-    let data = do_bw_status(bw_args).await?;
+async fn bw_status(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
+    let data = do_bw_status(bw_args, Some(unlock_args)).await?;
     write_str(io::stdout(), ser_to_json(&data.template)?).await?;
     Ok(())
 }
@@ -430,7 +455,7 @@ async fn get_bw_unlock_cmd_args(
     bw_args: &BWArgs,
     unlock_args: &BWUnlockArgs,
 ) -> Result<Vec<String>> {
-    let (subcmd_name, args) = kv2bw_cmd_args(&[
+    let (_, args) = kv2bw_cmd_args(&[
         // 编译期保证不会出现错误
         field_kv!(&unlock_args.check),
         field_kv!(&unlock_args.passwordenv),
@@ -444,7 +469,7 @@ async fn get_bw_unlock_cmd_args(
             .await?
             .to_string_lossy()
             .to_string(),
-        subcmd_name.ok_or_else(|| anyhow!("not found bw sub command name"))?,
+        "unlock".to_string(),
     ];
     if let Some(pw) = unlock_args.password.to_owned() {
         cmd_args.push(pw);
@@ -551,7 +576,10 @@ async fn spawn_daemon(bw_args: &BWArgs, serve_args: &BWServeArgs) -> Result<proc
     Ok(child)
 }
 
-async fn get_api_url(bw_args: &BWArgs) -> Result<String> {
+async fn get_api_url_or_unlock(
+    bw_args: &BWArgs,
+    unlock_args: Option<&BWUnlockArgs>,
+) -> Result<String> {
     let url = &bw_args.api_url.parse::<Url>()?;
     let hostname = url
         .host_str()
@@ -560,9 +588,19 @@ async fn get_api_url(bw_args: &BWArgs) -> Result<String> {
         .port_or_known_default()
         .ok_or_else(|| anyhow!("not found port in {url}"))?;
     let url = url.to_string();
+    let addr = (hostname, port);
     // 如果 addr 被使用则跳过
-    if !addr_in_use((hostname, port)).await? {
-        bail!("Please start the `bw serve` service")
+    if !addr_in_use(addr).await? {
+        let Some(unlock_args) = unlock_args else {
+            bail!("Please start the `bw serve` service")
+        };
+        let mut bw_args = bw_args.clone();
+        bw_args.raw = true;
+        let mut unlock_args = unlock_args.clone();
+        unlock_args.serve_args.restart = true;
+        info!(bw_args = ?bw_args, unlock_args = ?unlock_args, "unlocking when addr not used");
+        bw_unlock(&bw_args, &unlock_args).await?;
+        wait_tcp_port(addr, false, unlock_args.serve_args.wait_port_timeout).await?;
     }
     Ok(url)
 }
@@ -745,7 +783,7 @@ async fn wait_tcp_port(
 }
 
 async fn bw_sync(bw_args: &BWArgs, sync_args: &BWSyncArgs) -> Result<()> {
-    let url = match get_api_url(bw_args).await {
+    let url = match get_api_url_or_unlock(bw_args, None).await {
         Ok(url) => url,
         Err(e) => {
             // NOTE: 不能使用 std::env::args() 会传入 bwrap 的选项导致原 bw 出错
@@ -761,7 +799,7 @@ async fn bw_sync(bw_args: &BWArgs, sync_args: &BWSyncArgs) -> Result<()> {
     };
     let mut w = io::stdout();
     if sync_args.last {
-        let status = do_bw_status(bw_args).await?;
+        let status = do_bw_status(bw_args, None).await?;
         write_str(&mut w, status.template.last_sync).await?;
         return Ok(());
     }
