@@ -87,7 +87,7 @@ async fn run() -> Result<()> {
             list_args,
             unlock_args,
         }) => bw_list(&cli.bw_args, list_args, unlock_args).await,
-        Some(Status(unlock_args)) => bw_status(&cli.bw_args, unlock_args).await,
+        Some(Status) => bw_status(&cli.bw_args).await,
         Some(Serve(serve_args)) => {
             bw_serve(&cli.bw_args, cfg_serve_args.as_ref().unwrap_or(serve_args)).await
         }
@@ -298,7 +298,7 @@ enum BWCommands {
         unlock_args: BWUnlockArgs,
     },
     Serve(BWServeArgs),
-    Status(BWUnlockArgs),
+    Status,
     Unlock(BWUnlockArgs),
     Sync(BWSyncArgs),
     #[command(external_subcommand)]
@@ -376,17 +376,29 @@ async fn bw_list(
     Ok(())
 }
 
-async fn do_bw_status(
-    bw_args: &BWArgs,
-    unlock_args: Option<&BWUnlockArgs>,
-) -> Result<BWServeStatusRespData> {
-    let api = bwserve_api::BWServeApi::new(&get_api_url_or_unlock(bw_args, unlock_args).await?)?;
+async fn do_bw_status(_bw_args: &BWArgs, api_url: &str) -> Result<BWServeStatusRespData> {
+    let api = bwserve_api::BWServeApi::new(api_url)?;
     let resp_data = api.status().await.handle_resp_err()?;
     resp_data.data.ok_or_else(|| anyhow!("not found data"))
 }
 
-async fn bw_status(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
-    let data = do_bw_status(bw_args, Some(unlock_args)).await?;
+async fn bw_status(bw_args: &BWArgs) -> Result<()> {
+    let api_url = match get_api_url_or_unlock(bw_args, None).await {
+        Ok(url) => url,
+        Err(e) => {
+            info!(error = %e, "run original status");
+            let st = process::Command::new(find_real_bw(&bw_args.bw_path).await?)
+                .args(["status"])
+                .spawn()?
+                .wait()
+                .await?;
+            if st.success() {
+                return Ok(());
+            }
+            return Err(BWCliError::Follow(st).into());
+        }
+    };
+    let data = do_bw_status(bw_args, &api_url).await?;
     write_str(io::stdout(), ser_to_json(&data.template)?).await?;
     Ok(())
 }
@@ -808,7 +820,7 @@ async fn bw_sync(bw_args: &BWArgs, sync_args: &BWSyncArgs) -> Result<()> {
     };
     let mut w = io::stdout();
     if sync_args.last {
-        let status = do_bw_status(bw_args, None).await?;
+        let status = do_bw_status(bw_args, &url).await?;
         write_str(&mut w, status.template.last_sync).await?;
         return Ok(());
     }
