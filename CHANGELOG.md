@@ -1,3 +1,9 @@
+## v0.6.1 (2026-09-21)
+
+### Fix
+
+- suppress internal unlock output to avoid interfering with list/get
+
 ## v0.6.0 (2026-09-21)
 
 ### Feat
