@@ -493,6 +493,14 @@ async fn get_bw_unlock_cmd_args(
 const BW_SESSION_NAME: &str = "BW_SESSION";
 
 async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
+    do_bw_unlock(bw_args, unlock_args, true).await
+}
+
+async fn do_bw_unlock(
+    bw_args: &BWArgs,
+    unlock_args: &BWUnlockArgs,
+    write_stdout: bool,
+) -> Result<()> {
     if unlock_args.serve_args.restart && !bw_args.raw {
         bail!("--restart flag required --raw")
     }
@@ -511,7 +519,7 @@ async fn bw_unlock(bw_args: &BWArgs, unlock_args: &BWUnlockArgs) -> Result<()> {
         .wait_with_output()
         .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.trim().is_empty() {
+    if write_stdout && !stdout.trim().is_empty() {
         write_str(io::stdout(), &stdout).await?;
     }
     trace!(output = ?output, "got output");
@@ -619,7 +627,7 @@ async fn get_api_url_or_unlock(
         {
             do_bw_unlock_serve(&bw_args, &unlock_args).await?;
         } else {
-            bw_unlock(&bw_args, &unlock_args).await?;
+            do_bw_unlock(&bw_args, &unlock_args, false).await?;
         }
         wait_tcp_port(addr, false, unlock_args.serve_args.wait_port_timeout).await?;
     }
