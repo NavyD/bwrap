@@ -1,3 +1,14 @@
+## v0.6.0 (2026-09-21)
+
+### Feat
+
+- auto-unlock and start bw serve for get/list/status
+
+### Refactor
+
+- **status**: fallback to original `bw status`` to avoid starting a daemon
+- detect and reuse existing BW_SESSION
+
 ## v0.5.0 (2026-09-14)
 
 ### Feat
