@@ -6,14 +6,16 @@ members = ["cargo:."]
 # Generate and dist a source tarball
 source-tarball = false
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.32.0"
+cargo-dist-version = "0.33.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
 installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+# editorconfig-checker-disable-next-line
+targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
 
+# editorconfig-checker-disable-next-line
 # https://axodotdev.github.io/cargo-dist/book/ci/customizing.html#cross-compilation
 [dist.github-custom-runners.x86_64-unknown-linux-musl]
 runner = "ubuntu-latest"
