@@ -191,28 +191,28 @@ pub const DEFAULT_TCP_PORT: u16 = 8087;
 
 impl BWServeApi {
     pub fn new(base_url: &str) -> Result<Self> {
-        let mut client_build = Client::builder();
+        let client_build = Client::builder();
         let base_url = base_url.parse::<Url>()?;
-        let base_url = match base_url.scheme() {
+        let (base_url, client_build) = match base_url.scheme() {
             // https://github.com/bitwarden/clients/pull/14262
             // [PM-20220] feat: Add support for fd and unix socket bindings
             // NOTE: 暂未支持 fd+: UnixSocketProvider from raw fd #2812
             // https://github.com/seanmonstar/reqwest/issues/2812
             #[cfg(unix)]
             "unix" => {
-                client_build = client_build.unix_socket(base_url.path());
                 // bw serve 未指定端口时默认端口为 8087
                 // reqwest 需要 url 查找 path 如 http://127.0.0.1:8087/object/item/xx，host:port
                 // 部分会作为 header `Host: $host:$port` 用于服务端检查。
                 // 使用 unix socket 需要与 bw serve 的端口一致避免无法通过检查导致 forbidden
-                format!(
+                let fake_url = format!(
                     "http://{}:{}",
                     base_url.host_str().unwrap_or(DEFAULT_LOCALHOST_IP),
                     base_url.port().unwrap_or(DEFAULT_TCP_PORT)
                 )
-                .parse()?
+                .parse()?;
+                (fake_url, client_build.unix_socket(base_url.path()))
             }
-            "http" | "https" => base_url,
+            "http" | "https" => (base_url, client_build),
             s => {
                 bail!("Unsupported scheme {}", s)
             }
