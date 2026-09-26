@@ -1,3 +1,10 @@
+## v0.6.2 (2026-09-26)
+
+### Fix
+
+- **bwserve_api**: avoid unused_mut on Windows in client builder
+- **bwserve_api**: retry 502 responses during bw serve startup
+
 ## v0.6.1 (2026-09-21)
 
 ### Fix
