@@ -1,3 +1,9 @@
+## v0.6.3 (2026-09-27)
+
+### Fix
+
+- **bwserve_api**: actually retry 502 during bw serve startup
+
 ## v0.6.2 (2026-09-26)
 
 ### Fix
