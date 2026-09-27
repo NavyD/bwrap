@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use heck::ToKebabCase;
-use reqwest::{Client, retry};
+use reqwest::{Client, StatusCode, retry};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sonic_rs::{JsonContainerTrait, JsonValueTrait, ValueRef, from_slice as de_json_from_slice};
 #[allow(unused_imports)]
@@ -226,7 +226,47 @@ impl BWServeApi {
                         .ok_or_else(|| anyhow!("not found host for url={}", base_url))?
                         .to_string(),
                 )
-                .max_retries_per_request(3),
+                .max_retries_per_request(3)
+                .classify_fn(|req_rep| {
+                    trace!(
+                        method = %req_rep.method(),
+                        url = %req_rep.uri(),
+                        status = ?req_rep.status(),
+                        error = ?req_rep.error(),
+                        "classify retry"
+                    );
+                    // 判断请求方法是否幂等
+                    if matches!(
+                        req_rep.method(),
+                        &reqwest::Method::GET
+                            | &reqwest::Method::HEAD
+                            | &reqwest::Method::PUT
+                            | &reqwest::Method::DELETE
+                    ) && let Some(st) = req_rep.status()
+                        // 仅对幂等请求重试 瞬态状态码
+                        // 永久性错误: 501 Not Implemented 和 505 HTTP Version Not Supported
+                        && matches!(
+                            st,
+                            StatusCode::REQUEST_TIMEOUT             // 408
+                                | StatusCode::TOO_MANY_REQUESTS     // 429
+                                | StatusCode::INTERNAL_SERVER_ERROR // 500
+                                | StatusCode::BAD_GATEWAY           // 502
+                                | StatusCode::SERVICE_UNAVAILABLE   // 503
+                                | StatusCode::GATEWAY_TIMEOUT       // 504
+                        )
+                    {
+                        return req_rep.retryable();
+                    }
+
+                    if let Some(e) = req_rep.error()
+                        && let Some(re) = e.downcast_ref::<reqwest::Error>()
+                        && (re.is_connect() || re.is_timeout() || re.is_request())
+                    {
+                        return req_rep.retryable();
+                    }
+
+                    req_rep.success()
+                }),
             )
             .build()?;
         Ok(BWServeApi { base_url, client })
